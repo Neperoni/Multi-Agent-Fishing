@@ -9,8 +9,7 @@ https://open.canada.ca/data/en/dataset/e6e11b99-f0cc-44f7-f5eb-3b995fb1637e
 # Updated terrain data:
 Gebco 2026 data set
 (user defined area)
-I think it was like -120 W to -110W
-
+n55.0 to s35.0, w-135.0 to e-118.0
 
 ## Attribution:
 
