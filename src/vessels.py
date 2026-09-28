@@ -1,4 +1,6 @@
 import numpy as np
+import src.config as config 
+
 
 class SimulationVessel:
     def __init__(self, name, max_speed_kmh, start_x=0.0, start_y=0.0):
@@ -25,8 +27,8 @@ class SimulationVessel:
         dy_km = np.sin(heading_rad) * actual_speed * dt
         
         # Convert km to 500m grid pixels (1 km = 2 pixels)
-        self.x += dx_km * 2
-        self.y += dy_km * 2
+        self.x += dx_km * config.PIXELS_PER_KM
+        self.y += dy_km * config.PIXELS_PER_KM
 
 class PoacherVessel(SimulationVessel):
     def __init__(self, name, start_x, start_y):
