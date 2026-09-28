@@ -30,5 +30,12 @@ print("Python!")
 
 
 
+#based on looking at GFW data, it looks like fishing hotspots are usually at 100-150m depth,
+#a couple km in from the edge of the continental shelf
+#one spot was 500m depth
+#I suppose theres different kinds of fish and equipment, like maybe its crabs or something
+
+#The hot spots follow the curvature of the coast mostly
+#
 
 

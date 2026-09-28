@@ -4,19 +4,24 @@ import numpy as np
 from pathlib import Path
 from src.config import PIXELS_PER_KM, TIME_STEP_HOURS
 from src.vessels import PoacherVessel, PatrolVessel
+import xarray as xr
 
 class MaritimeSimEnvironment:
     """The core engine that holds data arrays, validates collisions, and runs a single frame step."""
-    def __init__(self, map_file_path: Path):
-        if not map_file_path.exists():
-            raise FileNotFoundError(f"Height map file not found at: {map_file_path}")
+    def __init__(self, file_path: Path):
+        if not file_path.exists():
+            raise FileNotFoundError(f"Height map file not found at: {file_path}")
             
-        with rasterio.open(map_file_path) as src:
-            self.height_map: np.ndarray = src.read(1)
-            self.map_meta: dict = src.meta.copy()
-            
-        self.vessels = {}  # Tracks vessels by name
-        print(f"Map initialized. Grid size: {self.height_map.shape[1]}x{self.height_map.shape[0]} pixels.")
+        ds = xr.open_dataset(file_path)
+        lon_min = float(ds.lon.min())
+        lon_max = float(ds.lon.max())
+        lat_min = float(ds.lat.min())
+        lat_max = float(ds.lat.max())
+
+
+
+
+
 
     def spawn_poacher(self, name: str, x: float, y: float):
         """Spawns and registers a poacher boat in the environment."""
