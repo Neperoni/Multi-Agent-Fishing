@@ -5,7 +5,7 @@ from src.environment import MaritimeSimEnvironment
 
 def main():
     # Initialize and configure the engine
-    sim = MaritimeSimEnvironment(Path("datasets/downscaled_500m.tif"))
+    sim = MaritimeSimEnvironment(Path("datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"))
     
     # Spawn the assets
     sim.spawn_poacher("Pirate_Alpha", x=50.0, y=120.0)
