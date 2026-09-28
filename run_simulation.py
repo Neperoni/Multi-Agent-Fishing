@@ -5,8 +5,7 @@ from src.environment import MaritimeSimEnvironment
 
 def main():
     # Initialize and configure the engine
-    sim = MaritimeSimEnvironment()
-    sim.load_map(Path("datasets/downscaled_500m.tif"))
+    sim = MaritimeSimEnvironment(Path("datasets/downscaled_500m.tif"))
     
     # Spawn the assets
     sim.spawn_poacher("Pirate_Alpha", x=50.0, y=120.0)
@@ -25,6 +24,8 @@ def main():
         current_state = sim.step(actions=actions)
         
         vessel_data = current_state["vessels"]
+
+        sim.print_vessel_table(vessel_data)
 
 if __name__ == "__main__":
     main()
