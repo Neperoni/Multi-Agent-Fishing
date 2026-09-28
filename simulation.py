@@ -2,10 +2,7 @@
 import rasterio
 import numpy as np
 
-
-
 print("Python!")
-
 
 #According to chat-gpt:
 #Commerical fishing boats travel at 18-25km/h during transit
@@ -30,5 +27,8 @@ print("Python!")
 #deep open ocean near cape scott 40-60kmm
 #deep offshore (tang gwan hacxwitak tsigis)
 #80-150km
+
+
+
 
 
