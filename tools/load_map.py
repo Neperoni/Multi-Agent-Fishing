@@ -5,6 +5,9 @@ from matplotlib.colors import LinearSegmentedColormap
 from opensimplex import OpenSimplex
 from scipy.ndimage import distance_transform_edt  # Required for the SDF edge-fading
 
+import json
+
+
 def generate_dynamic_hotspots(
     marl_height_grid: np.ndarray, 
     seed: int = 42, 
@@ -40,50 +43,75 @@ def generate_dynamic_hotspots(
     
     return dynamic_hotspots
 
-def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, width_km: float, height_km: float, grid_res_km: float, bounding_box: dict):
+def get_active_simulation_ports(ports_list: list, bounds: dict):
     """
-    Plots environmental bathymetry with a smooth continuous ocean gradient,
-    a sharp discrete 0-meter coastline, and custom alpha-faded hotspots.
+    Filters master port entries to active map bounds and transforms 
+    GPS degrees to exact flat simulator grid [X_km, Y_km] markers.
     """
+    km_per_degree = 111.32
+    center_lat = (bounds['lat_min'] + bounds['lat_max']) / 2.0
+    lon_scale_factor = np.cos(np.radians(center_lat))
+    
+    filtered_ports = []
+    for port in ports_list:
+        lat, lon = port['lat'], port['lon']
+        
+        # Check boundary collision
+        if (bounds['lon_min'] <= lon <= bounds['lon_max']) and (bounds['lat_min'] <= lat <= bounds['lat_max']):
+            x_km = (lon - bounds['lon_min']) * km_per_degree * lon_scale_factor
+            y_km = (lat - bounds['lat_min']) * km_per_degree
+            
+            filtered_ports.append({
+                "name": port['name'],
+                "grid_x": x_km,
+                "grid_y": y_km,
+                "jurisdiction": port['jurisdiction']
+            })
+    return filtered_ports
+
+def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, width_km: float, height_km: float, grid_res_km: float, bounding_box: dict, active_ports: list):
     plt.figure(figsize=(11, 9), dpi=100)
     v_min, v_max = -5000.0, 2000.0
     total_range = v_max - v_min
-    
-    def get_pos(val): 
-        return (val - v_min) / total_range
+    def get_pos(val): return (val - v_min) / total_range
         
-    # --- Reworked high-contrast smooth gradient ---
-    # Double-specifying get_pos(0) forces a hard, discrete transition at sea level.
     cdict = [
-        (get_pos(-5000), "#041631"), # Deep ocean abyss
-        (get_pos(-3500), "#09335f"), 
-        (get_pos(-2000), "#2B5D8C"), 
-        (get_pos(-500),  "#1888de"), # Mid-depth blue transitioning to shallow
-        (get_pos(0),     "#57b1cc"), # Shallow water coast (Bright cyan-blue)
-        # ---------------------------- DISCRETE SHARP COASTLINE SPLIT (0m)
-        (get_pos(0),     "#a3b18a"), # Lowland shore (Sage green)
-        (get_pos(500),   "#588157"), # Mid-elevation land
-        (get_pos(2000),  "#344e41")  # High-elevation mountains
+        (get_pos(-5000), "#000814"), (get_pos(-3500), "#001d3d"), (get_pos(-2000), "#003566"),
+        (get_pos(-500),  "#1e6091"), (get_pos(0),     "#4cc9f0"), 
+        (get_pos(0),     "#a3b18a"), (get_pos(500),   "#588157"), (get_pos(2000),  "#344e41")
     ]
     hybrid_cmap = LinearSegmentedColormap.from_list("high_contrast_hybrid", cdict, N=256)
     
-    # Dynamic alpha custom crimson map for masking
     alpha_red_dict = {
-        'red': [(0.0, 1.0, 1.0), (1.0, 0.9, 0.9)],
-        'green': [(0.0, 0.2, 0.2), (1.0, 0.0, 0.0)],
-        'blue': [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
-        'alpha': [(0.0, 0.0, 0.0), (1.0, 0.85, 0.85)]
+        'red': [(0.0, 1.0, 1.0), (1.0, 0.9, 0.9)], 'green': [(0.0, 0.2, 0.2), (1.0, 0.0, 0.0)],
+        'blue': [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], 'alpha': [(0.0, 0.0, 0.0), (1.0, 0.85, 0.85)]
     }
     alpha_red_cmap = LinearSegmentedColormap('alpha_red', alpha_red_dict)
     
-    # Plot base bathymetry map
     ax = plt.gca()
     img = ax.imshow(marl_height_grid, origin='lower', extent=[0, width_km, 0, height_km], cmap=hybrid_cmap, vmin=v_min, vmax=v_max)
-    
-    # Overlay hotspots using the dynamic-alpha colormap
     overlay_img = ax.imshow(hotspot_overlay, origin='lower', extent=[0, width_km, 0, height_km], cmap=alpha_red_cmap, vmin=0.0, vmax=1.0)
     
-    # Geographic Coordinate Conversion Functions
+    # --- ZOOM-DEPENDENT TEXT LAYER FILTER ---
+    show_labels = True
+    
+    for port in active_ports:
+        # Plot the clean, distinct red-dot asset indicator
+        ax.scatter(port['grid_x'], port['grid_y'], color='#ff007f', edgecolor='white', linewidth=1.0, s=40, zorder=5)
+        
+        # Only draw text vectors if our map bounds are tightly zoomed in
+        if show_labels:
+            ax.text(
+                port['grid_x'] + 4.0, port['grid_y'] - 2.0, 
+                port['name'], 
+                color='white', 
+                fontsize=7.5,      # Smaller, cleaner font
+                fontweight='medium', 
+                alpha=0.85, 
+                zorder=6,
+                bbox=dict(facecolor='black', alpha=0.3, lw=0, pad=1) # Minimal padding background
+            )
+        
     km_per_degree = 111.32
     center_lat = (bounding_box['lat_min'] + bounding_box['lat_max']) / 2.0
     lon_scale_factor = np.cos(np.radians(center_lat))
@@ -93,21 +121,15 @@ def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, w
     def k_to_lat(y): return bounding_box['lat_min'] + (y / km_per_degree)
     def lat_to_k(lat): return (lat - bounding_box['lat_min']) * km_per_degree
 
-    # Add secondary axes mapped to the geographic transforms
     secax_x = ax.secondary_xaxis('top', functions=(k_to_lon, lon_to_k))
     secax_x.set_xlabel('Longitude (°W / °E)', fontsize=11, labelpad=10)
-    
     secax_y = ax.secondary_yaxis('right', functions=(k_to_lat, lat_to_k))
     secax_y.set_ylabel('Latitude (°N)', fontsize=11, labelpad=15, rotation=270)
 
-    # Primary axis labels (Kilometers)
     ax.set_xlabel("X Coordinate (Kilometers from West Bound)", fontsize=11)
     ax.set_ylabel("Y Coordinate (Kilometers from South Bound)", fontsize=11)
-    
-    # Add UI / Aesthetic Elements
     plt.title(f"MARL Fishing Environment Map (Flattened Grid)\nResolution: {grid_res_km}km x {grid_res_km}km per cell", fontsize=14, fontweight='bold', pad=35)
     
-    # Update colorbar ticks to match the key structural gradient nodes
     ticks = [-5000, -3500, -2000, -500, 0, 500, 2000]
     cbar = plt.colorbar(img, orientation='vertical', shrink=0.65, pad=0.12, ticks=ticks)
     cbar.set_label('Elevation / Depth (Meters)', rotation=270, labelpad=15)
@@ -115,10 +137,9 @@ def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, w
     cbar_hotspot = plt.colorbar(overlay_img, orientation='horizontal', shrink=0.5, pad=0.12)
     cbar_hotspot.set_label('Biomass / Fishing Effort Density (SDF Soft Edge Transition)', fontsize=10)
     
-    ax.grid(color='white', linestyle='--', linewidth=0.5, alpha=0.2)
+    ax.grid(color='white', linestyle='--', linewidth=0.5, alpha=0.15)
     plt.tight_layout()
     plt.show()
-
 
 
 def load_and_interpolate_grid(file_path: str, grid_res_km: float = 1.0, bounding_box: dict = None):
@@ -166,37 +187,29 @@ def load_and_interpolate_grid(file_path: str, grid_res_km: float = 1.0, bounding
     
     return marl_height_grid, width_km, height_km
 
-
 # =========================================================================
 # RUNTIME EXECUTION
 # =========================================================================
 if __name__ == "__main__":
     file_path = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
-    RESOLUTION = 1.0  # 1km grid res
+    ports_file_path = "datasets/ports.json"  # <-- Text path definition
+    RESOLUTION = 1.0 
     
-    # --- DEFINE YOUR COASTAL RECTANGLE SUBSET HERE ---
     coastal_subset = {
-        'lon_min': -128.0,  
+        'lon_min': -126.0,  
         'lon_max': -122.0,
-        'lat_min': 40.5,
-        'lat_max': 52.0     
+        'lat_min': 42.0,
+        'lat_max': 50.0     
     }
     
-    # coastal_subset = {
-    #     'lon_min': -135.0,  
-    #     'lon_max': -122.0,
-    #     'lat_min': 40.5,
-    #     'lat_max': 55.0     
-    # }
-    
-    # Step 1: Compute flat bathymetry grid using the subset rect
+    # Step 1: Compute flat bathymetry grid topology
     height_grid, width_km, height_km = load_and_interpolate_grid(
         file_path, 
-        grid_res_km=RESOLUTION,
-        bounding_box=coastal_subset  
+        grid_res_km=RESOLUTION, 
+        bounding_box=coastal_subset
     )
     
-    # Step 2: Generate dynamic hotspots with a 5-pixel SDF edge fade
+    # Step 2: Generate dynamic hotspots with an SDF edge fade
     hotspot_overlay = generate_dynamic_hotspots(
         marl_height_grid=height_grid, 
         seed=42, 
@@ -204,12 +217,23 @@ if __name__ == "__main__":
         fade_margin_px=5.0
     )
     
-    # Step 3: Render pipeline (ADDED coastal_subset here)
+    # --- NEW STEP 3: Load the raw JSON text file dataset ---
+    with open(ports_file_path, "r", encoding="utf-8") as f:
+        fishing_ports_dataset = json.load(f)
+        
+    # Step 4: Extract and filter ports into the simulation kilometer coordinates
+    active_simulation_ports = get_active_simulation_ports(
+        ports_list=fishing_ports_dataset, 
+        bounds=coastal_subset
+    )
+    
+    # Step 5: Render environment pipeline with port vectors overlaid
     render_marl_map(
         marl_height_grid=height_grid, 
         hotspot_overlay=hotspot_overlay, 
         width_km=width_km, 
         height_km=height_km, 
         grid_res_km=RESOLUTION,
-        bounding_box=coastal_subset  # <--- THIS FIXES THE TYPEERROR
+        bounding_box=coastal_subset,
+        active_ports=active_simulation_ports
     )
