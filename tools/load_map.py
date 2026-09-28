@@ -2,6 +2,7 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.path as mpath
 from opensimplex import OpenSimplex
 from scipy.ndimage import distance_transform_edt  # Required for the SDF edge-fading
 
@@ -118,8 +119,54 @@ def load_and_interpolate_grid(file_path: str, grid_res_km: float = 1.0, bounding
     return marl_height_grid, width_km, height_km
 
 
-def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, width_km: float, height_km: float, grid_res_km: float, bounding_box: dict, active_ports: list):
-    plt.figure(figsize=(11, 9), dpi=100)
+def get_rotated_boat_marker(heading_rad: float):
+    """
+    Creates a custom boat-shaped polygon (square with a pointed bow) 
+    and rotates it using a real radian heading.
+    0.0 radians points straight UP (North), increasing clockwise.
+    """
+    # Base vertices for a vessel hull silhouette pointing straight UP (+Y axis)
+    vertices = np.array([
+        [0.0,  0.6],   # 1. Tip of the bow (front point)
+        [0.3,  0.2],   # 2. Right front shoulder
+        [0.3, -0.5],   # 3. Right rear stern corner
+        [-0.3, -0.5],  # 4. Left rear stern corner
+        [-0.3,  0.2],  # 5. Left front shoulder
+        [0.0,  0.6]    # 6. Close poly at the bow point
+    ])
+    
+    # Core vector graphics drawing instructions
+    codes = [
+        mpath.Path.MOVETO,
+        mpath.Path.LINETO,
+        mpath.Path.LINETO,
+        mpath.Path.LINETO,
+        mpath.Path.LINETO,
+        mpath.Path.CLOSEPOLY,
+    ]
+    
+    # 2D clockwise rotation transformation matrix
+    # Inverted to handle Matplotlib's counter-clockwise native orientation
+    c, s = np.cos(-heading_rad), np.sin(-heading_rad)
+    rotation_matrix = np.array([[c, -s], [s, c]])
+    
+    # Project our layout array points across the rotation matrix transformation
+    rotated_vertices = vertices @ rotation_matrix.T
+    
+    return mpath.Path(rotated_vertices, codes)
+def render_marl_map(
+    marl_height_grid: np.ndarray, 
+    hotspot_overlay: np.ndarray, 
+    width_km: float, 
+    height_km: float, 
+    grid_res_km: float, 
+    bounding_box: dict, 
+    active_ports: list,
+    fishing_boats: list = None,
+    patrol_boats: list = None,
+    boat_size: float = 65.0
+):
+    plt.figure(figsize=(12, 9), dpi=100)
     v_min, v_max = -5000.0, 2000.0
     total_range = v_max - v_min
     def get_pos(val): return (val - v_min) / total_range
@@ -141,38 +188,81 @@ def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, w
     img = ax.imshow(marl_height_grid, origin='lower', extent=[0, width_km, 0, height_km], cmap=hybrid_cmap, vmin=v_min, vmax=v_max)
     overlay_img = ax.imshow(hotspot_overlay, origin='lower', extent=[0, width_km, 0, height_km], cmap=alpha_red_cmap, vmin=0.0, vmax=1.0)
     
-    # Store text elements to modify their visibility dynamically
-    port_text_objects = []
+    # --- RENDER PORTS & TRACK TEXT OBJECTS ---
+    dynamic_text_objects = []  # Consolidated array tracking all text nodes
+    
     for port in active_ports:
         ax.scatter(port['grid_x'], port['grid_y'], color='#ff007f', edgecolor='white', linewidth=1.0, s=40, zorder=5)
-        
         t_obj = ax.text(
-            port['grid_x'] + 4.0, port['grid_y'] - 2.0, 
-            port['name'], 
+            port['grid_x'] + 4.0, port['grid_y'] - 2.0, port['name'], 
             color='white', fontsize=7.5, fontweight='bold', alpha=0.85, zorder=6,
             bbox=dict(facecolor='black', alpha=0.3, lw=0, pad=1)
         )
-        port_text_objects.append(t_obj)
+        dynamic_text_objects.append(t_obj)
 
-    # --- FIXED: Corrected the tuple math here ---
+    # Vector Path Shape Configuration Builder
+    def get_rotated_boat_marker(heading_rad: float):
+        vertices = np.array([[0.0, 0.6], [0.3, 0.2], [0.3, -0.5], [-0.3, -0.5], [-0.3, 0.2], [0.0, 0.6]])
+        codes = [mpath.Path.MOVETO, mpath.Path.LINETO, mpath.Path.LINETO, mpath.Path.LINETO, mpath.Path.LINETO, mpath.Path.CLOSEPOLY]
+        c, s = np.cos(-heading_rad), np.sin(-heading_rad)
+        rotation_matrix = np.array([[c, -s], [s, c]])
+        return mpath.Path(vertices @ rotation_matrix.T, codes)
+
+    # --- RENDER FISHING FLEET & TRACK EXTRACTED NAMES ---
+    if fishing_boats is not None:
+        for idx, boat in enumerate(fishing_boats):
+            heading_rad = boat.get('heading', 0.0)
+            ax.scatter(
+                boat['x_km'], boat['y_km'], color='#ffcc00', edgecolor='black', 
+                marker=get_rotated_boat_marker(heading_rad), s=boat_size, linewidth=0.8, zorder=10, 
+                label='Fishing Boat' if idx == 0 else ""
+            )
+            
+            boat_name = boat.get('name', f"F{idx + 1}")
+            fb_text = ax.text(
+                boat['x_km'] + 3.5, boat['y_km'] + 2.5, boat_name, 
+                color='#ffcc00', fontsize=7, fontweight='bold', alpha=0.9, zorder=12,
+                bbox=dict(facecolor='#050505', alpha=0.5, lw=0, pad=0.8)
+            )
+            dynamic_text_objects.append(fb_text) # Appended to dynamic handling array
+
+    # --- RENDER PROTECTION PATROL UNITS & TRACK EXTRACTED NAMES ---
+    if patrol_boats is not None:
+        for idx, patrol in enumerate(patrol_boats):
+            heading_rad = patrol.get('heading', 0.0)
+            ax.scatter(
+                patrol['x_km'], patrol['y_km'], color='#00ff66', edgecolor='black', 
+                marker=get_rotated_boat_marker(heading_rad), s=boat_size * 1.15, linewidth=1.0, zorder=11, 
+                label='Patrol Boat' if idx == 0 else ""
+            )
+            
+            patrol_name = patrol.get('name', f"P{idx + 1}")
+            pb_text = ax.text(
+                patrol['x_km'] + 3.5, patrol['y_km'] + 2.5, patrol_name, 
+                color='#00ff66', fontsize=7, fontweight='bold', alpha=0.9, zorder=12,
+                bbox=dict(facecolor='#050505', alpha=0.5, lw=0, pad=0.8)
+            )
+            dynamic_text_objects.append(pb_text) # Appended to dynamic handling array
+            
+    if fishing_boats or patrol_boats:
+        ax.legend(
+            loc='upper left', bbox_to_anchor=(1.25, 1.0), borderaxespad=0.,
+            framealpha=0.8, facecolor='#111111', edgecolor='white', labelcolor='white', fontsize=9.5
+        )
+
+    # --- UPDATED INTERACTIVE VIEWPORT SCALING REGISTRY ---
     def on_zoom_change(axes):
-        """Monitors real-time axis scale bounds during GUI viewport alterations."""
         xlim = axes.get_xlim()
-        # Properly subtract the first element from the second element of the tuple
-        current_visible_width_km = abs(xlim[1] - xlim[0])
-        
-        # If your viewport width is smaller than 400km, show text vectors
-        DYNAMIC_THRESHOLD_KM = 300.0
+        current_visible_width_km = abs(xlim[1] - xlim[0]) # Double indexed fixed array bounds math
+        DYNAMIC_THRESHOLD_KM = 400.0
         labels_visible = (current_visible_width_km <= DYNAMIC_THRESHOLD_KM)
         
-        for text_item in port_text_objects:
+        # Toggles ports, fishing boat labels, and patrol boat labels simultaneously
+        for text_item in dynamic_text_objects:
             text_item.set_visible(labels_visible)
-            
         axes.figure.canvas.draw_idle()
 
-    # Hook the event listener callback function directly into your active window canvas
     ax.callbacks.connect('xlim_changed', on_zoom_change)
-    # Trigger initial check state explicitly on boot layout
     on_zoom_change(ax)
         
     km_per_degree = 111.32
@@ -194,7 +284,7 @@ def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, w
     plt.title(f"MARL Fishing Environment Map (Flattened Grid)\nResolution: {grid_res_km}km x {grid_res_km}km per cell", fontsize=14, fontweight='bold', pad=35)
     
     ticks = [-5000, -3500, -2000, -500, 0, 500, 2000]
-    cbar = plt.colorbar(img, orientation='vertical', shrink=0.65, pad=0.12, ticks=ticks)
+    cbar = plt.colorbar(img, orientation='vertical', shrink=0.65, pad=0.15, ticks=ticks)
     cbar.set_label('Elevation / Depth (Meters)', rotation=270, labelpad=15)
     
     cbar_hotspot = plt.colorbar(overlay_img, orientation='horizontal', shrink=0.5, pad=0.12)
@@ -204,49 +294,38 @@ def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, w
     plt.tight_layout()
     plt.show()
 
-
-
 # =========================================================================
 # RUNTIME EXECUTION
 # =========================================================================
 if __name__ == "__main__":
     file_path = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
-    ports_file_path = "datasets/ports.json"  # <-- Text path definition
+    ports_file_path = "datasets/ports.json"
     RESOLUTION = 1.0 
     
     coastal_subset = {
-        'lon_min': -126.0,  
-        'lon_max': -122.0,
-        'lat_min': 42.0,
-        'lat_max': 50.0     
+        'lon_min': -126.0, 'lon_max': -122.0,
+        'lat_min': 42.0,   'lat_max': 50.0     
     }
     
-    # Step 1: Compute flat bathymetry grid topology
-    height_grid, width_km, height_km = load_and_interpolate_grid(
-        file_path, 
-        grid_res_km=RESOLUTION, 
-        bounding_box=coastal_subset
-    )
+    height_grid, width_km, height_km = load_and_interpolate_grid(file_path, grid_res_km=RESOLUTION, bounding_box=coastal_subset)
+    hotspot_overlay = generate_dynamic_hotspots(marl_height_grid=height_grid, seed=42, noise_feature_scale=30.0, fade_margin_px=5.0)
     
-    # Step 2: Generate dynamic hotspots with an SDF edge fade
-    hotspot_overlay = generate_dynamic_hotspots(
-        marl_height_grid=height_grid, 
-        seed=42, 
-        noise_feature_scale=30.0, 
-        fade_margin_px=5.0
-    )
-    
-    # --- NEW STEP 3: Load the raw JSON text file dataset ---
     with open(ports_file_path, "r", encoding="utf-8") as f:
         fishing_ports_dataset = json.load(f)
-        
-    # Step 4: Extract and filter ports into the simulation kilometer coordinates
-    active_simulation_ports = get_active_simulation_ports(
-        ports_list=fishing_ports_dataset, 
-        bounds=coastal_subset
-    )
+    active_simulation_ports = get_active_simulation_ports(fishing_ports_dataset, coastal_subset)
     
-    # Step 5: Render environment pipeline with port vectors overlaid
+    sample_fishing_boats = [
+        {"x_km": 45.0,  "y_km": 120.0, "heading": np.pi / 4,  "name": "ORION"},
+        {"x_km": 90.0,  "y_km": 340.0, "heading": np.pi,      "name": "MARINER"},
+        {"x_km": 150.0, "y_km": 510.0, "heading": 1.5 * np.pi, "name": "SEAWOLF"}
+    ]
+    
+    sample_patrol_boats = [
+        {"x_km": 60.0,  "y_km": 150.0, "heading": 0.0,         "name": "PATROL_A"},
+        {"x_km": 110.0, "y_km": 400.0, "heading": 0.75 * np.pi, "name": "PATROL_B"}
+    ]
+
+    # Render map pipeline including vehicles
     render_marl_map(
         marl_height_grid=height_grid, 
         hotspot_overlay=hotspot_overlay, 
@@ -254,5 +333,7 @@ if __name__ == "__main__":
         height_km=height_km, 
         grid_res_km=RESOLUTION,
         bounding_box=coastal_subset,
-        active_ports=active_simulation_ports
+        active_ports=active_simulation_ports,
+        fishing_boats=sample_fishing_boats, # Passed here
+        patrol_boats=sample_patrol_boats    # Passed here
     )
