@@ -20,6 +20,12 @@ Link: https://doi.org/10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
 # Ports:
 ## ai generated, but probably sourced from noaa and dfo
 
+
+# Vessels are assumed to have a "home harbour"
+# They spawn at that harbour, they got fish, then they return to that harbour
+# Then a new boat will spawn at a different harbour, to prevent spawn camping
+
+
 COMP4900I / COMP5801G  Final project   
 SWEEEEEEEEET   
 <img width="360" height="272" alt="cat_waving" src="https://github.com/user-attachments/assets/fa226d6d-997c-4e22-b1ab-da336e7ed1da" />
