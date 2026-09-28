@@ -42,11 +42,11 @@ def generate_dynamic_hotspots(
     dynamic_hotspots = smooth_edge_ramp * noise_grid
     
     return dynamic_hotspots
-
 def get_active_simulation_ports(ports_list: list, bounds: dict):
     """
     Filters master port entries to active map bounds and transforms 
     GPS degrees to exact flat simulator grid [X_km, Y_km] markers.
+    Cleans names to strip out structural parentheses additions.
     """
     km_per_degree = 111.32
     center_lat = (bounds['lat_min'] + bounds['lat_max']) / 2.0
@@ -61,86 +61,16 @@ def get_active_simulation_ports(ports_list: list, bounds: dict):
             x_km = (lon - bounds['lon_min']) * km_per_degree * lon_scale_factor
             y_km = (lat - bounds['lat_min']) * km_per_degree
             
+            # --- FIXED: Extract index 0 from the split list before stripping ---
+            clean_name = port['name'].split('(')[0].strip()
+            
             filtered_ports.append({
-                "name": port['name'],
+                "name": clean_name,
                 "grid_x": x_km,
                 "grid_y": y_km,
                 "jurisdiction": port['jurisdiction']
             })
     return filtered_ports
-
-def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, width_km: float, height_km: float, grid_res_km: float, bounding_box: dict, active_ports: list):
-    plt.figure(figsize=(11, 9), dpi=100)
-    v_min, v_max = -5000.0, 2000.0
-    total_range = v_max - v_min
-    def get_pos(val): return (val - v_min) / total_range
-        
-    cdict = [
-        (get_pos(-5000), "#000814"), (get_pos(-3500), "#001d3d"), (get_pos(-2000), "#003566"),
-        (get_pos(-500),  "#1e6091"), (get_pos(0),     "#4cc9f0"), 
-        (get_pos(0),     "#a3b18a"), (get_pos(500),   "#588157"), (get_pos(2000),  "#344e41")
-    ]
-    hybrid_cmap = LinearSegmentedColormap.from_list("high_contrast_hybrid", cdict, N=256)
-    
-    alpha_red_dict = {
-        'red': [(0.0, 1.0, 1.0), (1.0, 0.9, 0.9)], 'green': [(0.0, 0.2, 0.2), (1.0, 0.0, 0.0)],
-        'blue': [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], 'alpha': [(0.0, 0.0, 0.0), (1.0, 0.85, 0.85)]
-    }
-    alpha_red_cmap = LinearSegmentedColormap('alpha_red', alpha_red_dict)
-    
-    ax = plt.gca()
-    img = ax.imshow(marl_height_grid, origin='lower', extent=[0, width_km, 0, height_km], cmap=hybrid_cmap, vmin=v_min, vmax=v_max)
-    overlay_img = ax.imshow(hotspot_overlay, origin='lower', extent=[0, width_km, 0, height_km], cmap=alpha_red_cmap, vmin=0.0, vmax=1.0)
-    
-    # --- ZOOM-DEPENDENT TEXT LAYER FILTER ---
-    show_labels = True
-    
-    for port in active_ports:
-        # Plot the clean, distinct red-dot asset indicator
-        ax.scatter(port['grid_x'], port['grid_y'], color='#ff007f', edgecolor='white', linewidth=1.0, s=40, zorder=5)
-        
-        # Only draw text vectors if our map bounds are tightly zoomed in
-        if show_labels:
-            ax.text(
-                port['grid_x'] + 4.0, port['grid_y'] - 2.0, 
-                port['name'], 
-                color='white', 
-                fontsize=7.5,      # Smaller, cleaner font
-                fontweight='medium', 
-                alpha=0.85, 
-                zorder=6,
-                bbox=dict(facecolor='black', alpha=0.3, lw=0, pad=1) # Minimal padding background
-            )
-        
-    km_per_degree = 111.32
-    center_lat = (bounding_box['lat_min'] + bounding_box['lat_max']) / 2.0
-    lon_scale_factor = np.cos(np.radians(center_lat))
-    
-    def k_to_lon(x): return bounding_box['lon_min'] + (x / (km_per_degree * lon_scale_factor))
-    def lon_to_k(lon): return (lon - bounding_box['lon_min']) * km_per_degree * lon_scale_factor
-    def k_to_lat(y): return bounding_box['lat_min'] + (y / km_per_degree)
-    def lat_to_k(lat): return (lat - bounding_box['lat_min']) * km_per_degree
-
-    secax_x = ax.secondary_xaxis('top', functions=(k_to_lon, lon_to_k))
-    secax_x.set_xlabel('Longitude (°W / °E)', fontsize=11, labelpad=10)
-    secax_y = ax.secondary_yaxis('right', functions=(k_to_lat, lat_to_k))
-    secax_y.set_ylabel('Latitude (°N)', fontsize=11, labelpad=15, rotation=270)
-
-    ax.set_xlabel("X Coordinate (Kilometers from West Bound)", fontsize=11)
-    ax.set_ylabel("Y Coordinate (Kilometers from South Bound)", fontsize=11)
-    plt.title(f"MARL Fishing Environment Map (Flattened Grid)\nResolution: {grid_res_km}km x {grid_res_km}km per cell", fontsize=14, fontweight='bold', pad=35)
-    
-    ticks = [-5000, -3500, -2000, -500, 0, 500, 2000]
-    cbar = plt.colorbar(img, orientation='vertical', shrink=0.65, pad=0.12, ticks=ticks)
-    cbar.set_label('Elevation / Depth (Meters)', rotation=270, labelpad=15)
-    
-    cbar_hotspot = plt.colorbar(overlay_img, orientation='horizontal', shrink=0.5, pad=0.12)
-    cbar_hotspot.set_label('Biomass / Fishing Effort Density (SDF Soft Edge Transition)', fontsize=10)
-    
-    ax.grid(color='white', linestyle='--', linewidth=0.5, alpha=0.15)
-    plt.tight_layout()
-    plt.show()
-
 
 def load_and_interpolate_grid(file_path: str, grid_res_km: float = 1.0, bounding_box: dict = None):
     """
@@ -186,6 +116,95 @@ def load_and_interpolate_grid(file_path: str, grid_res_km: float = 1.0, bounding
     marl_height_grid = ds[height_var].interp(lon=interp_lons, lat=interp_lats, method="linear").values
     
     return marl_height_grid, width_km, height_km
+
+
+def render_marl_map(marl_height_grid: np.ndarray, hotspot_overlay: np.ndarray, width_km: float, height_km: float, grid_res_km: float, bounding_box: dict, active_ports: list):
+    plt.figure(figsize=(11, 9), dpi=100)
+    v_min, v_max = -5000.0, 2000.0
+    total_range = v_max - v_min
+    def get_pos(val): return (val - v_min) / total_range
+        
+    cdict = [
+        (get_pos(-5000), "#000814"), (get_pos(-3500), "#001d3d"), (get_pos(-2000), "#003566"),
+        (get_pos(-500),  "#1e6091"), (get_pos(0),     "#4cc9f0"), 
+        (get_pos(0),     "#a3b18a"), (get_pos(500),   "#588157"), (get_pos(2000),  "#344e41")
+    ]
+    hybrid_cmap = LinearSegmentedColormap.from_list("high_contrast_hybrid", cdict, N=256)
+    
+    alpha_red_dict = {
+        'red': [(0.0, 1.0, 1.0), (1.0, 0.9, 0.9)], 'green': [(0.0, 0.2, 0.2), (1.0, 0.0, 0.0)],
+        'blue': [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], 'alpha': [(0.0, 0.0, 0.0), (1.0, 0.85, 0.85)]
+    }
+    alpha_red_cmap = LinearSegmentedColormap('alpha_red', alpha_red_dict)
+    
+    ax = plt.gca()
+    img = ax.imshow(marl_height_grid, origin='lower', extent=[0, width_km, 0, height_km], cmap=hybrid_cmap, vmin=v_min, vmax=v_max)
+    overlay_img = ax.imshow(hotspot_overlay, origin='lower', extent=[0, width_km, 0, height_km], cmap=alpha_red_cmap, vmin=0.0, vmax=1.0)
+    
+    # Store text elements to modify their visibility dynamically
+    port_text_objects = []
+    for port in active_ports:
+        ax.scatter(port['grid_x'], port['grid_y'], color='#ff007f', edgecolor='white', linewidth=1.0, s=40, zorder=5)
+        
+        t_obj = ax.text(
+            port['grid_x'] + 4.0, port['grid_y'] - 2.0, 
+            port['name'], 
+            color='white', fontsize=7.5, fontweight='bold', alpha=0.85, zorder=6,
+            bbox=dict(facecolor='black', alpha=0.3, lw=0, pad=1)
+        )
+        port_text_objects.append(t_obj)
+
+    # --- FIXED: Corrected the tuple math here ---
+    def on_zoom_change(axes):
+        """Monitors real-time axis scale bounds during GUI viewport alterations."""
+        xlim = axes.get_xlim()
+        # Properly subtract the first element from the second element of the tuple
+        current_visible_width_km = abs(xlim[1] - xlim[0])
+        
+        # If your viewport width is smaller than 400km, show text vectors
+        DYNAMIC_THRESHOLD_KM = 300.0
+        labels_visible = (current_visible_width_km <= DYNAMIC_THRESHOLD_KM)
+        
+        for text_item in port_text_objects:
+            text_item.set_visible(labels_visible)
+            
+        axes.figure.canvas.draw_idle()
+
+    # Hook the event listener callback function directly into your active window canvas
+    ax.callbacks.connect('xlim_changed', on_zoom_change)
+    # Trigger initial check state explicitly on boot layout
+    on_zoom_change(ax)
+        
+    km_per_degree = 111.32
+    center_lat = (bounding_box['lat_min'] + bounding_box['lat_max']) / 2.0
+    lon_scale_factor = np.cos(np.radians(center_lat))
+    
+    def k_to_lon(x): return bounding_box['lon_min'] + (x / (km_per_degree * lon_scale_factor))
+    def lon_to_k(lon): return (lon - bounding_box['lon_min']) * km_per_degree * lon_scale_factor
+    def k_to_lat(y): return bounding_box['lat_min'] + (y / km_per_degree)
+    def lat_to_k(lat): return (lat - bounding_box['lat_min']) * km_per_degree
+
+    secax_x = ax.secondary_xaxis('top', functions=(k_to_lon, lon_to_k))
+    secax_x.set_xlabel('Longitude (°W / °E)', fontsize=11, labelpad=10)
+    secax_y = ax.secondary_yaxis('right', functions=(k_to_lat, lat_to_k))
+    secax_y.set_ylabel('Latitude (°N)', fontsize=11, labelpad=15, rotation=270)
+
+    ax.set_xlabel("X Coordinate (Kilometers from West Bound)", fontsize=11)
+    ax.set_ylabel("Y Coordinate (Kilometers from South Bound)", fontsize=11)
+    plt.title(f"MARL Fishing Environment Map (Flattened Grid)\nResolution: {grid_res_km}km x {grid_res_km}km per cell", fontsize=14, fontweight='bold', pad=35)
+    
+    ticks = [-5000, -3500, -2000, -500, 0, 500, 2000]
+    cbar = plt.colorbar(img, orientation='vertical', shrink=0.65, pad=0.12, ticks=ticks)
+    cbar.set_label('Elevation / Depth (Meters)', rotation=270, labelpad=15)
+    
+    cbar_hotspot = plt.colorbar(overlay_img, orientation='horizontal', shrink=0.5, pad=0.12)
+    cbar_hotspot.set_label('Biomass / Fishing Effort Density (SDF Soft Edge Transition)', fontsize=10)
+    
+    ax.grid(color='white', linestyle='--', linewidth=0.5, alpha=0.15)
+    plt.tight_layout()
+    plt.show()
+
+
 
 # =========================================================================
 # RUNTIME EXECUTION
