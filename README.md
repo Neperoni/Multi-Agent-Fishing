@@ -12,12 +12,13 @@ Gebco 2026 data set
 n55.0 to s35.0, w-135.0 to e-118.0
 
 ## Attribution:
-
 If the data sets are used in a presentation or publication then we ask that you acknowledge the source. This should be of the form:
 
 GEBCO Bathymetric Compilation Group 2026 (2026). The GEBCO_2026 Grid - a continuous terrain model for oceans and land at 15 arc-second intervals. doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
 Link: https://doi.org/10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
 
+# Ports:
+## ai generated, but probably sourced from noaa and dfo
 
 COMP4900I / COMP5801G  Final project   
 SWEEEEEEEEET   
