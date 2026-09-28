@@ -57,7 +57,6 @@ class MaritimeSimEnvironment:
                 vessel.apply_movement(heading_rad, speed_fraction)
                 self.check_collisions(vessel)
                 
-        # Return the actual live python object instances directly in lists!
         poachers = [v for v in self.vessels.values() if isinstance(v, PoacherVessel)]
         patrols = [v for v in self.vessels.values() if isinstance(v, PatrolVessel)]
         
