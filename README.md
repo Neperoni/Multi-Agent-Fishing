@@ -29,3 +29,41 @@ Link: https://doi.org/10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
 COMP4900I / COMP5801G  Final project   
 SWEEEEEEEEET   
 <img width="360" height="272" alt="cat_waving" src="https://github.com/user-attachments/assets/fa226d6d-997c-4e22-b1ab-da336e7ed1da" />
+
+
+# Research:
+
+According to chat-gpt:
+Commerical fishing boats travel at 18-25km/h during transit
+And 5-11km/h during fishing
+
+it takes about 3 hours to transit from dock to hotspot
+then 8 hours to fish
+
+Patrol boats transit at 45-48 km/h 
+there are 65km/h deployable dinghys
+patrol boats have a 20km radar view
+
+
+## Fishing Hotspots:
+fishing hotspots near vancouver are about 50-80km offshore
+this is where the continental shelf drops off, and we get upwelling
+salmon, halibut, tuna
+
+hotspots are 5-20km across
+
+GFW has maps of fishing activity, dataset is not freely downloadable, but we can view it and get an idea of how hospots look.
+
+based on looking at GFW data, it looks like fishing hotspots are usually at 100-150m depth,
+a couple km in from the edge of the continental shelf
+one spot was 500m depth
+I suppose theres different kinds of fish and equipment, like maybe its crabs or something
+
+The hot spots follow the curvature of the coast mostly
+
+
+### Notable hotspots:
+#### la perouse bank 35-50km
+deep open ocean near cape scott 40-60kmm
+deep offshore (tang gwan hacxwitak tsigis)
+80-150km

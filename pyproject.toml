@@ -1,0 +1,24 @@
+[project]
+name = "multi-agent-fishing"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Neperoni", email = "90918860+Neperoni@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "netcdf4>=1.7.4",
+    "numpy>=2.4.6",
+    "opensimplex>=0.4.5.1",
+    "pygame-ce>=2.5.8",
+    "scipy>=1.17.1",
+    "xarray>=2026.9.0",
+]
+
+[project.scripts]
+multi-agent-fishing = "multi_agent_fishing:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
