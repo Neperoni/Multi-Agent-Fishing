@@ -6,7 +6,7 @@
 
 ---
 
-## 🗺️ Terrain Data
+## Terrain Data
 
 ### Baseline Data (Unused)
 * **Source:** [Open Government Canada](https://canada.ca)
@@ -21,10 +21,10 @@
 
 ---
 
-## ⚓ Ports & Harbor Mechanics
+## Ports & Harbor Mechanics
 
 ### Port Locations
-* Synthetic data generated via AI, modeled after official NOAA and DFO port locations.
+* Synthetic data generated via AI, likely modeled after official NOAA and DFO port locations.
 
 ### Vessel Spawn Logic
 * Vessels are assigned a permanent **home harbor**.
@@ -33,7 +33,7 @@
 
 ---
 
-## 🔬 Research & Simulation Parameters
+## Research & Simulation Parameters
 
 ### Agent Movement & Timings
 
@@ -49,7 +49,7 @@
 
 ---
 
-## 🐟 Fishing Hotspots
+## Fishing Hotspots
 
 ### Geographic Characteristics
 * **Location:** Located 50–80 km offshore where the continental shelf drops off, creating nutrient-rich upwelling.
@@ -59,7 +59,7 @@
   * Primary depth: 100–150 meters (a few kilometers inland from the continental shelf edge).
   * Deep-water exceptions: Up to 500 meters (likely corresponding to specific gear/species like crab).
 
-### Notable Hotspots to Model
+### Notable Hotspots
 * **La Perouse Bank:** 35–50 km offshore.
 * **Cape Scott Deep Ocean:** 40–60 km offshore.
 * **Tang.ɢwan — ḥačxʷiqak — Tsig̱is (Deep Offshore Marine Protected Area):** 80–150 km offshore.
