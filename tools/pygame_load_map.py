@@ -8,6 +8,8 @@ Controls
     H .................. toggle biomass overlay
     L .................. toggle labels
     R .................. reset view
+    Space .............. pause/resume simulation
+    Right-click drag ... measure distance and bearing
     Esc ................ quit
 
 Requires: pygame-ce (or pygame >= 2), numpy, xarray, scipy, opensimplex, multiagent_fishing
@@ -25,13 +27,13 @@ import multiagent_fishing as mf
 # =========================================================================
 FILE_PATH = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
 PORTS_PATH = "datasets/ports.json"
-RESOLUTION = 0.5  # km per grid cell
+RESOLUTION = 1.0  # km per grid cell
 COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_max": 50.0}
 BIOMASS_SEED = 42
 
 KM_PER_DEGREE = 111.32
-SHIP_LABEL_THRESHOLD_KM = 9000.0  # hide labels when more than this many km are visible
-PORT_LABEL_THRESHOLD_KM = 700.0
+SHIP_LABEL_THRESHOLD_KM = 4000.0  # Basically always on
+PORT_LABEL_THRESHOLD_KM = 700.0   
 MAX_SCALE = 60.0            # max zoom, in screen pixels per km
 
 BG_COLOR = (8, 10, 16)
@@ -80,6 +82,63 @@ class Camera:
         self.cy = wy + (sy - self.H / 2) / self.scale
         self._clamp()
 
+import json
+import random
+from pathlib import Path
+
+# Global memory cache to hold name arrays so we only read the disk once at startup
+_FRONTEND_NAME_POOL = None
+
+def spawn_random_vessel(env, boat_views_list, is_poacher, names_json_path="datasets/boat_names.json"):
+    global _FRONTEND_NAME_POOL
+    
+    if not env.map_data.ports:
+        return None
+
+    if _FRONTEND_NAME_POOL is None:
+        p = Path(names_json_path)
+        if p.exists():
+            with open(p, "r", encoding="utf-8") as f:
+                _FRONTEND_NAME_POOL = json.load(f)
+        else:
+            _FRONTEND_NAME_POOL = {
+                "fishing_boats": {"first_word": ["MYSTIC"], "last_word": ["WAVE"]},
+                "patrol_boats": {"first_word": ["VIGILANT"], "last_word": ["GUARDIAN"]}
+            }
+
+    port = random.choice(env.map_data.ports)
+    pool_key = "fishing_boats" if is_poacher else "patrol_boats"
+    pool = _FRONTEND_NAME_POOL.get(pool_key, {})
+    
+    first = random.choice(pool.get("first_word", ["MYSTIC" if is_poacher else "VIGILANT"]))
+    last = random.choice(pool.get("last_word", ["WAVE" if is_poacher else "GUARDIAN"]))
+    vessel_name = f"{first} {last}"
+    
+    # Instantiate the vessel WITHOUT an ID (None)
+    if is_poacher:
+        new_vessel = mf.simulation.PoacherVessel(
+            name=vessel_name, 
+            start_x=port["grid_x"], 
+            start_y=port["grid_y"],
+            start_heading=random.uniform(0.0, 2 * math.pi)
+        )
+        # Environment assigns the ID right here and returns it
+        vessel_id = env.add_vessel(new_vessel)
+        color = FISHING_COLOR
+    else:
+        new_vessel = mf.simulation.PatrolVessel(
+            name=vessel_name, 
+            start_x=port["grid_x"], 
+            start_y=port["grid_y"],
+            start_heading=random.uniform(0.0, 2 * math.pi)
+        )
+        vessel_id = env.add_vessel(new_vessel)
+        color = PATROL_COLOR
+
+    new_view = mf.rendering.BoatView(new_vessel, color, boat_size_px=12.0)
+    boat_views_list.append(new_view)
+    
+    return vessel_id
 
 class LabelCache:
     def __init__(self, font, bg_alpha):
@@ -136,62 +195,7 @@ def draw_legend(screen, font, legend_fish, legend_patrol):
         screen.blit(font.render(name, True, (230, 230, 230)), (48, cy - 8))
 
 
-# Inside tools/pygame_load_map.py (or your main frontend controller loop)
-import random
-import json
-from pathlib import Path
 
-# Cache the name arrays globally in your front-end script memory to avoid slow, repeated disk reads
-_NAME_POOL = None
-
-def spawn_random_poacher_frontend(env, boat_views_list, FISHING_COLOR, names_json_path="datasets/boat_names.json"):
-    """Handles frontend orchestration: generates name, registers sim model, creates visual view."""
-    global _NAME_POOL
-    
-    if not env.map_data.ports:
-        return None
-
-    # Load JSON only once into frontend global memory cache
-    if _NAME_POOL is None:
-        p = Path(names_json_path)
-        if p.exists():
-            with open(p, "r", encoding="utf-8") as f:
-                _NAME_POOL = json.load(f)
-        else:
-            _NAME_POOL = {"fishing_boats": {"first_word": ["MYSTIC"], "last_word": ["WAVE"]}}
-
-    # 1. Selection logic: select random port node from the clean map data list
-    port = random.choice(env.map_data.ports)
-    
-    # 2. Form string name configuration paths
-    pool = _NAME_POOL.get("fishing_boats", {})
-    first = random.choice(pool.get("first_word", ["MYSTIC"]))
-    last = random.choice(pool.get("last_word", ["WAVE"]))
-    vessel_name = f"{first} {last}"
-    
-    # 3. Dynamic increment ID assignments pass
-    # Environment tracks all IDs globally to avoid conflicts
-    next_id = 1
-    while env._is_id_conflicting(next_id):
-        next_id += 1
-
-    # 4. Instantiate pure data model object and attach to mathematical physics frame tracking
-    new_vessel = mf.simulation.PoacherVessel(
-        vessel_id=next_id, 
-        name=vessel_name, 
-        start_x=port["grid_x"], 
-        start_y=port["grid_y"],
-        start_heading=random.uniform(0.0, 2 * math.pi)
-    )
-    
-    # Register with the environment data engine
-    env.add_poacher(new_vessel)
-
-    # 5. Instantly encapsulate it in a rendering layer wrapper object
-    new_view = mf.rendering.BoatView(new_vessel, FISHING_COLOR, boat_size_px=12.0)
-    boat_views_list.append(new_view)
-    
-    return next_id
 
 
 # =========================================================================
@@ -200,8 +204,6 @@ def spawn_random_poacher_frontend(env, boat_views_list, FISHING_COLOR, names_jso
 def run(env, boat_views, map_view, max_frames=None):
     screen = pygame.display.get_surface()
 
-    # Extract world dimensions directly from the encapsulated map data
-    Wc, Hc = map_view.map_data.shape
     world_w = map_view.map_data.width_km
     world_h = map_view.map_data.height_km
     
@@ -214,9 +216,8 @@ def run(env, boat_views, map_view, max_frames=None):
     port_labels = LabelCache(label_font, 90)
     boat_labels = LabelCache(label_font, 130)
 
-    # Instantiate actual simulation vessel objects for strict type consistency inside the legend
-    dummy_fish_vessel = mf.simulation.PoacherVessel(vessel_id=-1, name="DummyFish", start_x=0.0, start_y=0.0, start_heading=0.0)
-    dummy_patrol_vessel = mf.simulation.PatrolVessel(vessel_id=-2, name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
+    dummy_fish_vessel = mf.simulation.PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0, start_heading=0.0)
+    dummy_patrol_vessel = mf.simulation.PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
 
     legend_fish = mf.rendering.BoatView(dummy_fish_vessel, FISHING_COLOR, boat_size_px=12.0)
     legend_patrol = mf.rendering.BoatView(dummy_patrol_vessel, PATROL_COLOR, boat_size_px=12.0)
@@ -224,10 +225,15 @@ def run(env, boat_views, map_view, max_frames=None):
     center_lat = (COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2
     lon_scale = np.cos(np.radians(center_lat))
 
-    # Plain Python structures to hold scrolling alerts and layout states
     ui_messages = []
     show_labels = True
     dragging = False
+    is_paused = False  # Runtime Simulation Pause Toggle State
+    
+    # Measuring Tool Vector States
+    measuring = False
+    measure_start_screen = (0, 0)
+
     clock = pygame.time.Clock()
     frame = 0
     running = True
@@ -238,7 +244,6 @@ def run(env, boat_views, map_view, max_frames=None):
         W, H = screen.get_size()
         cam.W, cam.H = W, H
 
-        # 1. HANDLE USER/KEYBOARD INPUTS
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
@@ -251,14 +256,26 @@ def run(env, boat_views, map_view, max_frames=None):
                     show_labels = not show_labels
                 elif ev.key == pygame.K_r:
                     cam.fit(W, H)
+                elif ev.key == pygame.K_SPACE:
+                    is_paused = not is_paused  # Toggle active physics state updates
+                    ui_messages.append("SIMULATION PAUSED" if is_paused else "SIMULATION RESUMED")
+                    if len(ui_messages) > 20: ui_messages.pop(0)
             elif ev.type == pygame.MOUSEWHEEL:
                 cam.zoom_at(*pygame.mouse.get_pos(), 1.2 ** ev.y)
-            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2):
-                dragging = True
-            elif ev.type == pygame.MOUSEBUTTONUP and ev.button in (1, 2):
-                dragging = False
-            elif ev.type == pygame.MOUSEMOTION and dragging:
-                cam.pan_pixels(*ev.rel)
+            elif ev.type == pygame.MOUSEBUTTONDOWN:
+                if ev.button in (1, 2):
+                    dragging = True
+                elif ev.button == 3:  # Right-click down: spawn ruler anchor node
+                    measuring = True
+                    measure_start_screen = ev.pos
+            elif ev.type == pygame.MOUSEBUTTONUP:
+                if ev.button in (1, 2):
+                    dragging = False
+                elif ev.button == 3:  # Right-click release: scrub ruler line
+                    measuring = False
+            elif ev.type == pygame.MOUSEMOTION:
+                if dragging:
+                    cam.pan_pixels(*ev.rel)
 
         keys = pygame.key.get_pressed()
         step_speed = 600 * dt
@@ -272,125 +289,114 @@ def run(env, boat_views, map_view, max_frames=None):
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
         # =========================================================================
-        # 2. RUNTIME LIFECYCLE MANAGEMENT & ACTION ROUTING
+        # UPDATE SIMULATION PHYSICS STEP
         # =========================================================================
-        actions = {}
-        views_to_remove = []
-
-        for view in boat_views:
-            vessel = view.vessel
+        if not is_paused:
+            actions = {v.vessel.id: (v.vessel.current_heading, 0.5) for v in boat_views}
+            step_events = env.step(actions, dt=dt)
             
-            # Pass A: Handle general environmental inactivations (groundings, captures)
-            if not vessel.is_active:
-                views_to_remove.append(view)
-                env.remove_vessel(vessel.id)
-                continue
-            
-            # Pass B: Evaluate if a fully loaded poacher has arrived back at its home harbor
-            if hasattr(vessel, "cargo") and vessel.cargo >= vessel.max_cargo:
-                dx_home = vessel.home_x - vessel.x
-                dy_home = vessel.home_y - vessel.y
-                distance_home = math.hypot(dx_home, dy_home)
-                
-                if distance_home <= 1.5:  # Destination reached safely!
-                    print(f"🚢 {vessel.name} successfully unloaded cargo at home harbor and despawned!")
-                    vessel.is_active = False
-                    views_to_remove.append(view)
-                    env.remove_vessel(vessel.id)
-                    
-                    # Deploy a replacement immediately at a random harbor port
-                    spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
-                    continue
-                else:
-                    # Steer straight towards home harbor coords at full throttle (1.0)
-                    target_heading = math.atan2(dx_home, dy_home)
-                    actions[vessel.id] = (target_heading, 1.0)
-            else:
-                # Default Cruise: Maintain initial heading at half throttle (0.5)
-                actions[vessel.id] = (vessel.current_heading, 0.5)
+            for app in step_events.get("apprehensions", []):
+                p_id, pat_id = app["poacher_id"], app["by_patrol_id"]
+                p_name = env.poachers[p_id].name if p_id in env.poachers else f"Poacher {p_id}"
+                pat_name = env.patrol_boats[pat_id].name if pat_id in env.patrol_boats else f"Patrol {pat_id}"
+                ui_messages.append(f"ALERT: {p_name} captured by {pat_name}!")
+                # Apprehensions are strictly poachers being caught
+                spawn_random_vessel(env, boat_views, is_poacher=True)
 
-        # Clean out dead visual views to prevent index-skipping loop errors
-        for dead_view in views_to_remove:
-            if dead_view in boat_views:
-                boat_views.remove(dead_view)
+            for g_id in step_events.get("groundings", []):
+                is_poach = g_id in env.poachers
+                name = env.poachers[g_id].name if is_poach else (env.patrol_boats[g_id].name if g_id in env.patrol_boats else f"Vessel {g_id}")
+                ui_messages.append(f"CRASH: {name} ran aground on land!")
+                # Dynamically match the exact ship type that crashed
+                spawn_random_vessel(env, boat_views, is_poacher=is_poach)
+
+            for o_id in step_events.get("out_of_bounds", []):
+                is_poach = o_id in env.poachers
+                name = env.poachers[o_id].name if is_poach else (env.patrol_boats[o_id].name if o_id in env.patrol_boats else f"Vessel {o_id}")
+                ui_messages.append(f"BOUNDARY: {name} sailed out of bounds!")
+                # Dynamically match the exact ship type that exited
+                spawn_random_vessel(env, boat_views, is_poacher=is_poach)
+
+            if len(ui_messages) > 20:
+                ui_messages = ui_messages[-20:]
+
 
         # =========================================================================
-        # 3. ADVANCE SIMULATION STATE & INTERCEPT LOGGING
+        # VISIBILITY CALCULATIONS
         # =========================================================================
-        step_events = env.step(actions, dt=dt)
+        # W / cam.scale calculates the current horizontal kilometer width of the viewport window
+        view_width_km = W / cam.scale
         
-        # Parse returned physics events directly into the text alert lists
-        for app in step_events.get("apprehensions", []):
-            p_id, pat_id = app["poacher_id"], app["by_patrol_id"]
-            poacher_name = env.poachers[p_id].name if p_id in env.poachers else f"Poacher {p_id}"
-            patrol_name = env.patrol_boats[pat_id].name if pat_id in env.patrol_boats else f"Patrol {pat_id}"
-            ui_messages.append(f"💥 ALERT: {poacher_name} captured by {patrol_name}!")
+        ports_text_on = show_labels and (view_width_km <= PORT_LABEL_THRESHOLD_KM)
+        ships_text_on = show_labels and (view_width_km <= SHIP_LABEL_THRESHOLD_KM)
 
-        for g_id in step_events.get("groundings", []):
-            name = env.poachers[g_id].name if g_id in env.poachers else (env.patrol_boats[g_id].name if g_id in env.patrol_boats else f"Vessel {g_id}")
-            ui_messages.append(f"🏝️ CRASH: {name} ran aground on land!")
-            
-            # Spawn a replacement boat automatically following a terrain collision
-            spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
-
-        for o_id in step_events.get("out_of_bounds", []):
-            name = env.poachers[o_id].name if o_id in env.poachers else (env.patrol_boats[o_id].name if o_id in env.patrol_boats else f"Vessel {o_id}")
-            ui_messages.append(f"🌊 BOUNDARY: {name} sailed out of bounds!")
-            
-            # Spawn a replacement boat automatically following a boundary breach
-            spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
-
-        # Enforce history limit: remove oldest item if list size exceeds 20 items
-        if len(ui_messages) > 20:
-            ui_messages = ui_messages[-20:]
-
-        # =========================================================================
-        # 4. RENDERING PASSES
-        # =========================================================================
-        vessel_labels_on = show_labels and (W / cam.scale <= SHIP_LABEL_THRESHOLD_KM)
-        port_labels_on = show_labels and (W / cam.scale <= PORT_LABEL_THRESHOLD_KM)
-
-
-        # Draw map backgrounds and active port vectors
         map_view.draw_background(screen, cam)
-        map_view.draw_ports(screen, cam, port_labels_on, port_labels)
-
-        # Polymorphically render remaining active ships
+        map_view.draw_ports(screen, cam, ports_text_on, port_labels)
+        
         for view in boat_views:
-            view.draw(screen, cam, vessel_labels_on, boat_labels)
+            view.draw(screen, cam, ships_text_on, boat_labels)
 
-        # Render overlays, legends, and scales
         draw_legend(screen, font, legend_fish, legend_patrol)
         draw_scale_bar(screen, cam, font)
+
+
+        # =========================================================================
+        # RENDER MEASURING RULER OVERLAY
+        # =========================================================================
+        if measuring:
+            current_mouse_pos = pygame.mouse.get_pos()
+            
+            # Translate vector pixel points to continuous kilometer world tracking positions
+            x0, y0 = cam.to_world(*measure_start_screen)
+            x1, y1 = cam.to_world(*current_mouse_pos)
+            
+            # Compute Euclidean range distance (km) and compass bearing angle (degrees)
+            dist_km = math.hypot(x1 - x0, y1 - y0)
+            
+            # Compass degrees clockwise from North (+Y axis)
+            bearing_rad = math.atan2(x1 - x0, y1 - y0)
+            bearing_deg = (math.degrees(bearing_rad)) % 360.0
+            
+            # Draw vector guide line nodes
+            pygame.draw.line(screen, (0, 255, 255), measure_start_screen, current_mouse_pos, 2)
+            
+            # FIXED: Explicitly unpack the tuples into discrete integer x, y arguments
+            pygame.gfxdraw.filled_circle(screen, int(measure_start_screen[0]), int(measure_start_screen[1]), 4, (0, 255, 255))
+            pygame.gfxdraw.filled_circle(screen, int(current_mouse_pos[0]), int(current_mouse_pos[1]), 4, (0, 255, 255))
+            
+            # Blit textual telemetry values next to the dragging crosshair anchor point
+            measure_str = f" {dist_km:.1f} km | {bearing_deg:.1f}°"
+            m_surf = font.render(measure_str, True, (0, 255, 255))
+            
+            m_bg = pygame.Surface((m_surf.get_width() + 6, m_surf.get_height() + 2), pygame.SRCALPHA)
+            m_bg.fill((10, 15, 20, 200))
+            m_bg.blit(m_surf, (3, 1))
+            screen.blit(m_bg, (current_mouse_pos[0] + 12, current_mouse_pos[1] - 12))
+
 
         # --- Draw Scrolling Messages List ---
         msg_y = 50
         for msg in ui_messages:
             txt_surf = font.render(msg, True, (255, 255, 255))
-            
-            # FIXED: Increased container width from 320 to 380 to fit longer text strings safely
             bg_box = pygame.Surface((380, txt_surf.get_height() + 4), pygame.SRCALPHA)
             bg_box.fill((10, 10, 15, 180))
             bg_box.blit(txt_surf, (5, 2))
-            
-            # FIXED: Shifted position left to screen.get_width() - 400 to account for the wider boxes
             screen.blit(bg_box, (screen.get_width() - 400, msg_y))
             msg_y += txt_surf.get_height() + 8
 
-
-
-        # --- Draw Bottom HUD Bar Metrics ---
+        # =========================================================================
+        # 5. DRAW BOTTOM HUD & KEYS INSTRUCTIONS PANELS (UPDATED STACKED VERSION)
+        # =========================================================================
         mx, my = pygame.mouse.get_pos()
         wx, wy = cam.to_world(mx, my)
         
-        # Calculate simulation clock metrics out of total elapsed hours
         total_hours = env.sim_time_hours
         sim_days = int(total_hours // 24)
         sim_hours = int(total_hours % 24)
         sim_minutes = int((total_hours * 60) % 60)
         
-        # Build HUD metadata string with the time signature appended directly to the front
-        info = f"TIME: {sim_days:02d}d::{sim_hours:02d}h::{sim_minutes:02d}m"
+        status_prefix = "PAUSED" if is_paused else "RUNNING"
+        info = f"[{status_prefix}] TIME: {sim_days:02d}d::{sim_hours:02d}h::{sim_minutes:02d}m"
         info += f"  |  x {wx:7.1f} km  y {wy:7.1f} km"
         info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
         info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
@@ -402,13 +408,25 @@ def run(env, boat_views, map_view, max_frames=None):
         else:
             info += "  elev ------- m  biomass ----"
             
-        hint = "drag: pan | wheel: zoom | H: overlay | L: labels | R: reset"
+        hint = "drag: pan | wheel: zoom | H: overlay | L: labels | Space: pause | R-click: measure | R: reset"
+        
+        # 1. Paint the solid bottom dashboard layer bar
         bar = pygame.Surface((W, 24), pygame.SRCALPHA)
         bar.fill((0, 0, 0, 170))
         screen.blit(bar, (0, H - 24))
+        
+        # 2. Blit Telemetry values left-aligned inside the bottom background bar channel
         screen.blit(font.render(info, True, (230, 230, 230)), (8, H - 21))
-        h_surf = font.render(hint, True, (150, 150, 150))
-        screen.blit(h_surf, (W - h_surf.get_width() - 8, H - 21))
+        
+        # 3. Pre-render instructions text on a separate panel layer stacked 
+        # SAFELY ABOVE the dark taskbar strip to prevent screen overlapping completely
+        h_surf = font.render(hint, True, (160, 170, 180))
+        hint_box = pygame.Surface((h_surf.get_width() + 10, h_surf.get_height() + 4), pygame.SRCALPHA)
+        hint_box.fill((10, 12, 18, 190)) 
+        hint_box.blit(h_surf, (5, 2))
+        
+        # Blitted directly above the 24px bottom bar line height margin
+        screen.blit(hint_box, (W - hint_box.get_width() - 8, H - 24 - hint_box.get_height() - 4))
 
         pygame.display.flip()
         frame += 1
@@ -423,30 +441,26 @@ def main():
 
     print("Loading data via package MapGenerator...")
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
-    map_data = generator.get_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
+    map_data = generator.generate_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
     
-    # Initialize both the View Presenter and the Data Environment Tracker
     map_view = mf.rendering.MapView(map_data)
     env = mf.simulation.Environment(map_data)
 
-    # 1. Instantiate pure simulation fleet items (With explicit initial headings)
     sim_poachers = [
-        mf.simulation.PoacherVessel(vessel_id=1, name="ORION", start_x=45.0, start_y=120.0, start_heading=np.pi / 4),
-        mf.simulation.PoacherVessel(vessel_id=2, name="MARINER", start_x=90.0, start_y=340.0, start_heading=np.pi),
-        mf.simulation.PoacherVessel(vessel_id=3, name="SEAWOLF", start_x=150.0, start_y=510.0, start_heading=1.5 * np.pi)
+        mf.simulation.PoacherVessel(name="ORION", start_x=45.0, start_y=120.0, start_heading=np.pi / 4),
+        mf.simulation.PoacherVessel(name="MARINER", start_x=90.0, start_y=340.0, start_heading=np.pi),
+        mf.simulation.PoacherVessel(name="SEAWOLF", start_x=150.0, start_y=510.0, start_heading=1.5 * np.pi)
     ]
     sim_patrols = [
-        mf.simulation.PatrolVessel(vessel_id=10, name="PATROL_A", start_x=60.0, start_y=150.0, start_heading=0.0),
-        mf.simulation.PatrolVessel(vessel_id=11, name="PATROL_B", start_x=110.0, start_y=400.0, start_heading=0.75 * np.pi)
+        mf.simulation.PatrolVessel(name="PATROL_A", start_x=60.0, start_y=150.0, start_heading=0.0),
+        mf.simulation.PatrolVessel(name="PATROL_B", start_x=110.0, start_y=400.0, start_heading=0.75 * np.pi)
     ]
 
-    # 2. Register instances inside the mathematical environment engine
     for p in sim_poachers:
-        env.add_poacher(p)
+        env.add_vessel(p)
     for p in sim_patrols:
-        env.add_patrol(p)
+        env.add_vessel(p)
 
-    # 3. Create view wrappers mapping directly over the active environment vessels list
     boat_views = []
     for p in sim_poachers:
         boat_views.append(mf.rendering.BoatView(p, FISHING_COLOR, boat_size_px=12.0))

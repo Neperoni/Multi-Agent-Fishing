@@ -1,65 +1,55 @@
 # multiagent_fishing/simulation/Environment.py
 
-import json
 import math
-import random
-from pathlib import Path
 from typing import Dict, Tuple, List
 from .vessels import PoacherVessel, PatrolVessel, SimulationVessel
 
 class Environment:
     """
     Manages the pure mathematical state of the multi-agent fishing simulation.
-    Operates strictly in a continuous kilometer vector space.
-    Handles vessel lifecycles via unique integer IDs, spawning, and action routing.
+    Handles automatic sequential integer ID assignment on registration.
     """
-    def __init__(self, map_data, boat_names_path: str | Path = "datasets/boat_names.json"):
-        """
-        :param map_data: An instance of the Map class containing world dimensions and ports.
-        :param boat_names_path: Path to the JSON file containing vessel naming components.
-        """
+    def __init__(self, map_data):
         self.map_data = map_data
-        
-        # Core data registries keyed strictly on unique integer IDs
         self.poachers: Dict[int, PoacherVessel] = {}
         self.patrol_boats: Dict[int, PatrolVessel] = {}
         
-        # Incremental ID tracking counter to assign the next available integer automatically
         self._next_id = 1
-
-        # Track total elapsed simulation time in hours
         self.sim_time_hours = 0.0
+        _registered_references = {}
 
-        # Pre-load the structural name lists into memory once at startup
-        self.name_pool = {"fishing_boats": {"first_word": [], "last_word": []},
-                          "patrol_boats": {"first_word": [], "last_word": []}}
+    def add_vessel(self, vessel: SimulationVessel) -> int:
+        """
+        Unified entry point to register any vessel type.
+        Safeguards against adding the exact same memory reference twice.
+        """
+        is_already_added = any(vessel is existing for existing in self.all_vessels)
+        if is_already_added:
+            print(f"Simulation Warning: Ignored duplicate request for {vessel.name}.")
+            return vessel.id
+
+        # 2. Assign the next available simulation integer ID
+        vessel.id = self._get_next_id()
         
-        n_path = Path(boat_names_path)
-        if n_path.exists():
-            with open(n_path, "r", encoding="utf-8") as f:
-                self.name_pool = json.load(f)
+        # 3. Route to the correct fleet dictionary
+        if isinstance(vessel, PoacherVessel):
+            self.poachers[vessel.id] = vessel
+        elif isinstance(vessel, PatrolVessel):
+            self.patrol_boats[vessel.id] = vessel
+        else:
+            raise TypeError(f"Cannot add unknown vessel subclass type: {type(vessel)}")
+            
+        return vessel.id
 
-    def _get_and_increment_id(self) -> int:
-        """Finds and claims the next true sequential unique integer ID available."""
-        while self._is_id_conflicting(self._next_id):
-            self._next_id += 1
-        claimed_id = self._next_id
-        self._next_id += 1
-        return claimed_id
 
-    def add_poacher(self, vessel: PoacherVessel) -> bool:
-        if self._is_id_conflicting(vessel.id):
-            return False
-        self.poachers[vessel.id] = vessel
-        return True
-
-    def add_patrol(self, vessel: PatrolVessel) -> bool:
-        if self._is_id_conflicting(vessel.id):
-            return False
-        self.patrol_boats[vessel.id] = vessel
-        return True
 
     def remove_vessel(self, vessel_id: int) -> bool:
+        """Removes a vessel and clears its tracking states entirely."""
+        # Look up the vessel instance to safely prune its memory address token from our reference set
+        vessel = self.poachers.get(vessel_id) or self.patrol_boats.get(vessel_id)
+        if vessel:
+            self._registered_references.discard(id(vessel))
+            
         if vessel_id in self.poachers:
             del self.poachers[vessel_id]
             return True
@@ -67,33 +57,68 @@ class Environment:
             del self.patrol_boats[vessel_id]
             return True
         return False
-
-    def _is_id_conflicting(self, vessel_id: int) -> bool:
-        return (vessel_id in self.poachers) or (vessel_id in self.patrol_boats)
+    
+    
+    def _get_next_id(self) -> int:
+        """Finds the next unassigned sequential integer ID token."""
+        while (self._next_id in self.poachers) or (self._next_id in self.patrol_boats):
+            self._next_id += 1
+        assigned_id = self._next_id
+        self._next_id += 1
+        return assigned_id
 
     @property
     def all_vessels(self) -> List[SimulationVessel]:
         return list(self.poachers.values()) + list(self.patrol_boats.values())
 
-    def step(self, actions: Dict[int, Tuple[float, float]], dt: float = 0.25) -> dict:
-        logs = {"out_of_bounds": [], "groundings": [], "apprehensions": []}
-        # Advance the simulation internal clock by the timestep duration
+# multiagent_fishing/simulation/Environment.py
+
+class Environment:
+    # ... (add_vessel and helper methods remain unchanged)
+
+    def step(self, actions: dict, dt: float = 0.25) -> dict:
+        """
+        Advances the simulation.
+        :param actions: Dict mapping ID to a tuple:
+                        - Poachers: (heading_rad, speed_fraction, fishing_toggle)
+                        - Patrols:  (heading_rad, speed_fraction)
+        """
         self.sim_time_hours += dt
+        logs = {"out_of_bounds": [], "groundings": [], "apprehensions": []}
         
+        # 1. Process Poachers
         for vessel_id, vessel in self.poachers.items():
             if vessel_id in actions and vessel.is_active:
-                heading, speed = actions[vessel_id]
+                # Unpack the discrete fishing toggle (0 = cruise, 1 = deploy nets)
+                heading, speed, fish_toggle = actions[vessel_id]
+                
+                # The agent retains full control over its fishing state toggle at all times
+                vessel.is_fishing = bool(fish_toggle == 1)
+
                 vessel.apply_movement(heading, speed, dt)
                 self._enforce_environmental_constraints(vessel, logs)
+                
+                # --- CARGO EXTRACTION MATH ---
+                if vessel.is_active and vessel.is_fishing and vessel.cargo < vessel.max_cargo:
+                    # Sample the background biomass scalar (0.0 to 1.0+)
+                    biomass_density = self.map_data.get_biomass_at_pixel(vessel.x, vessel.y, method="bilinear")
+                    
+                    # Extraction rate scales dynamically by background concentration value
+                    harvest_rate_per_hour = biomass_density
+                    
+                    # Accumulate fish up to the physical max cargo hold boundary limit
+                    vessel.cargo = min(vessel.max_cargo, vessel.cargo + (harvest_rate_per_hour * dt))
 
+        # 2. Process Patrols
         for vessel_id, vessel in self.patrol_boats.items():
             if vessel_id in actions and vessel.is_active:
-                heading, speed = actions[vessel_id]
+                heading, speed = actions[vessel_id][:2] # Ensure safe slicing
                 vessel.apply_movement(heading, speed, dt)
                 self._enforce_environmental_constraints(vessel, logs)
 
         self._check_patrol_interceptions(logs)
         return logs
+
 
     def _enforce_environmental_constraints(self, vessel: SimulationVessel, logs: dict):
         if not self.map_data.is_in_bounds(vessel.x, vessel.y):
