@@ -102,14 +102,14 @@ class MapGenerator:
         if not self.file_path.exists():
             raise FileNotFoundError(f"NetCDF source file not found at: {self.file_path}")
 
-    def get_map(
+    def generate_map(
         self, 
         resolution_km: float, 
         bounding_box: dict, 
         biomass_seed: int = 42,
-        port_ocean_radius_km: float = 2.0,         # Parameterized circular ocean channel radius
+        port_ocean_radius_km: float = 4.0,         # Parameterized circular ocean channel radius
         port_ocean_depth_m: float = -50.0,         # Ocean depth set for harbor basin
-        port_biomass_clear_radius_km: float = 3.0  # Zero-biomass radius around harbors
+        port_biomass_clear_radius_km: float = 7.0  # Zero-biomass radius around harbors
     ) -> Map:
         """
         Parses NetCDF grids, projects coordinates to metric kilometers, filters regional ports,
@@ -152,10 +152,14 @@ class MapGenerator:
             with open(self.ports_path, "r", encoding="utf-8") as f:
                 ports_list = json.load(f)
             for port in ports_list:
+                # SKIP RIVER ENTRIES ENTIRELY
+                # if port.get("type") == "river":
+                #     continue
+                    
                 lat, lon = port["lat"], port["lon"]
                 if bounding_box["lon_min"] <= lon <= bounding_box["lon_max"] and bounding_box["lat_min"] <= lat <= bounding_box["lat_max"]:
                     filtered_ports.append({
-                        "name": port["name"].split("(")[0].strip(),
+                        "name": port["name"].split("(")[0].strip(), # strip labels
                         "grid_x": (lon - bounding_box["lon_min"]) * KM_PER_DEGREE * lon_scale,
                         "grid_y": (lat - bounding_box["lat_min"]) * KM_PER_DEGREE,
                         "jurisdiction": port.get("jurisdiction", ""),
