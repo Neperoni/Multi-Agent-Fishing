@@ -12,15 +12,11 @@ Controls
 
 Requires: pygame-ce (or pygame >= 2), numpy, xarray, scipy, opensimplex, multiagent_fishing
 """
-import json
 import math
-from pathlib import Path
-
 import numpy as np
 import pygame
 import pygame.gfxdraw
 
-# Import the decoupled module namespace
 import multiagent_fishing as mf
 
 
@@ -34,69 +30,13 @@ COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_ma
 BIOMASS_SEED = 42
 
 KM_PER_DEGREE = 111.32
-V_MIN, V_MAX = -5000.0, 2000.0
 LABEL_THRESHOLD_KM = 400.0  # hide labels when more than this many km are visible
 MAX_SCALE = 60.0            # max zoom, in screen pixels per km
-BOAT_SIZE_PX = 14.0         # boat size on screen (constant regardless of zoom)
 
 BG_COLOR = (8, 10, 16)
 FISHING_COLOR = (255, 204, 0)
 PATROL_COLOR = (0, 255, 102)
 PORT_COLOR = (255, 0, 127)
-
-
-def get_active_simulation_ports(ports_list, bounds):
-    center_lat = (bounds["lat_min"] + bounds["lat_max"]) / 2.0
-    lon_scale = np.cos(np.radians(center_lat))
-    out = []
-    for port in ports_list:
-        lat, lon = port["lat"], port["lon"]
-        if bounds["lon_min"] <= lon <= bounds["lon_max"] and bounds["lat_min"] <= lat <= bounds["lat_max"]:
-            out.append({
-                "name": port["name"].split("(")[0].strip(),
-                "grid_x": (lon - bounds["lon_min"]) * KM_PER_DEGREE * lon_scale,
-                "grid_y": (lat - bounds["lat_min"]) * KM_PER_DEGREE,
-                "jurisdiction": port.get("jurisdiction", ""),
-            })
-    return out
-
-
-# =========================================================================
-# MAP COLORING (replicates the matplotlib colormap + red alpha overlay)
-# =========================================================================
-def _hex(c):
-    return [int(c[i:i + 2], 16) for i in (1, 3, 5)]
-
-
-OCEAN_X = np.array([-5000, -3500, -2000, -500, 0], dtype=float)
-OCEAN_C = np.array([_hex(c) for c in ("#000814", "#001d3d", "#003566", "#1e6091", "#4cc9f0")], dtype=float)
-LAND_X = np.array([0, 500, 2000], dtype=float)
-LAND_C = np.array([_hex(c) for c in ("#a3b18a", "#588157", "#344e41")], dtype=float)
-
-
-def colorize_height(height):
-    """Float RGB (rows, cols, 3). Hard edge at sea level, like the original colormap."""
-    h = np.clip(np.nan_to_num(height, nan=V_MIN), V_MIN, V_MAX)
-    out = np.empty(h.shape + (3,), dtype=float)
-    for c in range(3):
-        ocean = np.interp(h, OCEAN_X, OCEAN_C[:, c])
-        land = np.interp(h, LAND_X, LAND_C[:, c])
-        out[..., c] = np.where(h < 0, ocean, land)
-    return out
-
-
-def composite_hotspots(base_rgb, hotspots):
-    v = np.clip(np.nan_to_num(hotspots), 0.0, 1.0)
-    a = (0.85 * v)[..., None]  # alpha ramps 0 -> 0.85
-    red = np.stack([255 * (1 - 0.1 * v), 255 * 0.2 * (1 - v), np.zeros_like(v)], axis=-1)
-    return base_rgb * (1 - a) + red * a
-
-
-def to_surface(rgb):
-    """(rows, cols, 3) with row 0 = south  ->  pygame surface with north at the top."""
-    arr = np.clip(rgb[::-1], 0, 255).transpose(1, 0, 2)
-    return pygame.surfarray.make_surface(np.ascontiguousarray(arr).astype(np.uint8)).convert()
-
 
 # =========================================================================
 # CAMERA  (world units = km, +Y is north; screen +Y is down)
@@ -139,23 +79,6 @@ class Camera:
         self._clamp()
 
 
-# =========================================================================
-# DRAWING
-# =========================================================================
-HULL_SQUARE = [(-0.3, 0.2), (0.3, 0.2), (0.3, -0.5), (-0.3, -0.5)]
-BOW_TRIANGLE = [(-0.3, 0.2), (0.3, 0.2), (0.0, 0.6)]
-
-
-def draw_boat(surf, sx, sy, heading, size, fill, outline=(0, 0, 0)):
-    c, s = math.cos(heading), math.sin(heading)
-
-    def xf(pts):
-        return [(round(sx + (vx * c + vy * s) * size), round(sy + (vx * s - vy * c) * size)) for vx, vy in pts]
-
-    for poly in (xf(HULL_SQUARE), xf(BOW_TRIANGLE)):
-        pygame.gfxdraw.filled_polygon(surf, poly, fill)
-        pygame.gfxdraw.aapolygon(surf, poly, outline)
-
 
 class LabelCache:
     def __init__(self, font, bg_alpha):
@@ -172,31 +95,6 @@ class LabelCache:
         return self.cache[key]
 
 
-def draw_map(target, cam, map_surf, res):
-    Wc, Hc = map_surf.get_size()
-    left, right = cam.to_world(0, 0)[0], cam.to_world(cam.W, 0)[0]
-    top, bottom = cam.to_world(0, 0)[1], cam.to_world(0, cam.H)[1]
-
-    c0 = max(0, math.floor(left / res))
-    c1 = min(Wc, math.ceil(right / res))
-    r0 = max(0, math.floor(Hc - top / res))
-    r1 = min(Hc, math.ceil(Hc - bottom / res))
-    if c1 <= c0 or r1 <= r0:
-        return
-
-    x0, y0 = cam.to_screen(c0 * res, (Hc - r0) * res)
-    x1, y1 = cam.to_screen(c1 * res, (Hc - r1) * res)
-    dx, dy = round(x0), round(y0)
-    dw, dh = max(1, round(x1) - dx), max(1, round(y1) - dy)
-
-    src = map_surf.subsurface((c0, r0, c1 - c0, r1 - r0))
-    if res * cam.scale < 1.0:
-        scaled = pygame.transform.smoothscale(src, (dw, dh))
-    else:
-        scaled = pygame.transform.scale(src, (dw, dh))
-    target.blit(scaled, (dx, dy))
-
-
 def draw_scale_bar(screen, cam, font):
     km = 140 / cam.scale
     mag = 10 ** math.floor(math.log10(km))
@@ -211,22 +109,31 @@ def draw_scale_bar(screen, cam, font):
     screen.blit(lbl, (x1 - length / 2 - lbl.get_width() / 2, y - 22))
 
 
-def draw_legend(screen, font):
+def draw_legend(screen, font, legend_fish, legend_patrol):
     rows = [("Fishing Boat", "fish"), ("Patrol Boat", "patrol"), ("Port", "port")]
     panel = pygame.Surface((150, 12 + 24 * len(rows)), pygame.SRCALPHA)
     panel.fill((17, 17, 17, 210))
     screen.blit(panel, (10, 10))
+    
+    # Lightweight camera helper to map panel coordinates 1:1 onto screen space
+    class UI_Camera:
+        W = H = 9999
+        def to_screen(self, x, y): return x, y
+    ui_cam = UI_Camera()
+
     for i, (name, kind) in enumerate(rows):
         cy = 10 + 18 + 24 * i
         if kind == "fish":
-            draw_boat(screen, 28, cy, 0.0, 12, FISHING_COLOR)
+            legend_fish.vessel.x, legend_fish.vessel.y = 28, cy
+            legend_fish.draw(screen, ui_cam, labels_on=False, label_cache=None)
         elif kind == "patrol":
-            draw_boat(screen, 28, cy, 0.0, 12, PATROL_COLOR)
+            legend_patrol.vessel.x, legend_patrol.vessel.y = 28, cy
+            legend_patrol.draw(screen, ui_cam, labels_on=False, label_cache=None)
         else:
             pygame.gfxdraw.filled_circle(screen, 28, cy, 5, PORT_COLOR)
             pygame.gfxdraw.aacircle(screen, 28, cy, 5, (255, 255, 255))
+            
         screen.blit(font.render(name, True, (230, 230, 230)), (48, cy - 8))
-
 
 # =========================================================================
 # MAIN LOOP
@@ -247,6 +154,14 @@ def run(boat_views, map_view, max_frames=None):
     label_font = pygame.font.SysFont(mono, 12, bold=True)
     port_labels = LabelCache(label_font, 90)
     boat_labels = LabelCache(label_font, 130)
+
+    # Instantiate actual simulation vessel objects for strict type consistency
+    dummy_fish_vessel = mf.simulation.PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0)
+    dummy_patrol_vessel = mf.simulation.PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0)
+
+    # Wrap them cleanly inside BoatView instances
+    legend_fish = mf.rendering.BoatView(dummy_fish_vessel, FISHING_COLOR, boat_size_px=12.0)
+    legend_patrol = mf.rendering.BoatView(dummy_patrol_vessel, PATROL_COLOR, boat_size_px=12.0)
 
     center_lat = (COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2
     lon_scale = np.cos(np.radians(center_lat))
@@ -296,28 +211,19 @@ def run(boat_views, map_view, max_frames=None):
         if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
-        # =========================================================================
-        # VISIBILITY CALCULATIONS (Calculated up front once per frame)
-        # =========================================================================
         labels_on = show_labels and (W / cam.scale <= LABEL_THRESHOLD_KM)
 
-        # =========================================================================
-        # RENDERING PASSES (Delegated to View Layers)
-        # =========================================================================
         # 1. Blit the topographic slice layer 
         map_view.draw_background(screen, cam)
-
-        # 2. Render localized port vector nodes (Now purely accepts the final boolean)
         map_view.draw_ports(screen, cam, labels_on, port_labels)
 
-        # 3. Draw active fleet boats via polymorphic display wrappers
         for view in boat_views:
             view.draw(screen, cam, labels_on, boat_labels)
 
         # =========================================================================
-        # HUD INFRASTRUCTURE TEXT BLOCKS
+        # HUD
         # =========================================================================
-        draw_legend(screen, font)
+        draw_legend(screen, font, legend_fish, legend_patrol)
         draw_scale_bar(screen, cam, font)
 
         mx, my = pygame.mouse.get_pos()
@@ -326,7 +232,6 @@ def run(boat_views, map_view, max_frames=None):
         info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
         info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
         
-        # Safely sample grid cells using the decoupled map telemetry getters
         col = int(wx // map_view.map_data.km_per_pixel) if map_view.map_data.km_per_pixel > 0 else 0
         row = int(wy // map_view.map_data.km_per_pixel) if map_view.map_data.km_per_pixel > 0 else 0
         
@@ -335,7 +240,6 @@ def run(boat_views, map_view, max_frames=None):
             biomass = map_view.map_data.get_biomass_at_pixel(col, row)
             info += f"  elev {elev:7.0f} m  biomass {biomass:.2f}"
         else:
-            # Gracefully handle off-map coordinates instead of crashing
             info += "  elev ------- m  biomass ----"
             
         hint = "drag: pan | wheel: zoom | H: overlay | L: labels | R: reset"
@@ -358,12 +262,10 @@ def main():
     pygame.display.set_caption("MARL Fishing Environment")
 
     print("Loading data via package MapGenerator...")
-    # Pass PORTS_PATH directly into the generator constructor
-    # --- Setup section in main() ---
+
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
     map_data = generator.get_map(RESOLUTION, COASTAL_SUBSET)
 
-    # Create the presentation view handler
     map_view = mf.rendering.MapView(map_data)
 
     # Instantiate the underlying pure simulation layer entities
