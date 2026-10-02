@@ -1,6 +1,7 @@
 # multiagent_fishing/map_generator.py
 
 from pathlib import Path
+import json
 import numpy as np
 import xarray as xr
 from opensimplex import OpenSimplex
@@ -30,6 +31,14 @@ class Map:
         return self._height_grid.shape
 
     @property
+    def cols_count(self) -> int:
+        return self.cols
+
+    @property
+    def rows_count(self) -> int:
+        return self.rows
+
+    @property
     def km_per_pixel(self) -> float:
         if self.cols > 1:
             return self.width_km / self.cols
@@ -43,34 +52,25 @@ class Map:
     def biomass_data(self) -> np.ndarray:
         return self._biomass_grid
 
-    # =========================================================================
-    # COORDINATE SPACE BOUNDARY CODES & SAMPLING METHODS
-    # =========================================================================
     def is_in_bounds(self, x_km: float, y_km: float) -> bool:
-        """Checks if a continuous kilometer coordinate point rests inside the active tracking canvas."""
         return 0.0 <= x_km <= self.width_km and 0.0 <= y_km <= self.height_km
 
     def get_height_at_pixel(self, x_km: float, y_km: float, method: str = "closest") -> float:
-        """Gets the elevation/depth data directly from a continuous coordinate coordinate string."""
         return self._sample_grid(self._height_grid, x_km, y_km, method)
 
     def get_biomass_at_pixel(self, x_km: float, y_km: float, method: str = "closest") -> float:
-        """Gets the biomass/hotspot density directly from a continuous coordinate coordinate string."""
         return self._sample_grid(self._biomass_grid, x_km, y_km, method)
 
     def km_to_pixel_coords(self, x_km: float, y_km: float) -> tuple[float, float]:
-        """Converts continuous kilometer coordinates into raw continuous floating-point cell indices."""
         res = self.km_per_pixel
         if res <= 0.0:
             return 0.0, 0.0
         return x_km / res, y_km / res
 
     def _sample_grid(self, grid: np.ndarray, x_km: float, y_km: float, method: str) -> float:
-        """Internal worker method to handle closest cell indexing or bilinear interpolation matrices."""
         if not self.is_in_bounds(x_km, y_km):
-            raise IndexError(f"Kilometer coordinates ({x_km:.2f}, {y_km:.2f}) out of bounds for map dimensions ({self.width_km:.1f}km, {self.height_km:.1f}km)")
+            raise IndexError(f"Kilometer coordinates ({x_km:.2f}, {y_km:.2f}) out of bounds")
 
-        # Convert kilometer vector points into continuous pixel spaces
         px, py = self.km_to_pixel_coords(x_km, y_km)
 
         if method == "closest":
@@ -79,26 +79,19 @@ class Map:
             return float(grid[row, col])
 
         elif method == "bilinear":
-            # 1. Grab bounding floor indices
             c0 = int(np.floor(px))
             r0 = int(np.floor(py))
-            
-            # 2. Grab ceiling limits while protecting matrix array edges
             c1 = min(c0 + 1, self.cols - 1)
             r1 = min(r0 + 1, self.rows - 1)
 
-            # 3. Calculate interpolation ratios (weights)
             tx = px - c0
             ty = py - r0
 
-            # 4. Perform standard two-axis bilinear interpolation blending math
             val_bottom = (1.0 - tx) * grid[r0, c0] + tx * grid[r0, c1]
             val_top = (1.0 - tx) * grid[r1, c0] + tx * grid[r1, c1]
-            
             return float((1.0 - ty) * val_bottom + ty * val_top)
-
         else:
-            raise ValueError(f"Unknown interpolation type format requested: '{method}'. Use 'closest' or 'bilinear'.")
+            raise ValueError(f"Unknown interpolation mode: '{method}'")
 
 
 class MapGenerator:
@@ -109,7 +102,19 @@ class MapGenerator:
         if not self.file_path.exists():
             raise FileNotFoundError(f"NetCDF source file not found at: {self.file_path}")
 
-    def get_map(self, resolution_km: float, bounding_box: dict, biomass_seed: int = 42) -> Map:
+    def get_map(
+        self, 
+        resolution_km: float, 
+        bounding_box: dict, 
+        biomass_seed: int = 42,
+        port_ocean_radius_km: float = 2.0,         # Parameterized circular ocean channel radius
+        port_ocean_depth_m: float = -50.0,         # Ocean depth set for harbor basin
+        port_biomass_clear_radius_km: float = 3.0  # Zero-biomass radius around harbors
+    ) -> Map:
+        """
+        Parses NetCDF grids, projects coordinates to metric kilometers, filters regional ports,
+        and executes procedural overrides using circular numpy masks to clear ocean channels and biomass.
+        """
         ds = xr.open_dataset(self.file_path)
         height_var = "elevation" if "elevation" in ds else "height"
         
@@ -129,7 +134,6 @@ class MapGenerator:
 
         x_km = np.arange(0, width_km, resolution_km)
         y_km = np.arange(0, height_km, resolution_km)
-        
         lons = lon_min + x_km / (KM_PER_DEGREE * lon_scale)
         lats = lat_min + y_km / KM_PER_DEGREE
         lons2d, lats2d = np.meshgrid(lons, lats)
@@ -142,9 +146,9 @@ class MapGenerator:
 
         biomass_grid = self._generate_biomass_noise(height_grid, seed=biomass_seed)
 
+        # Parse ports list from disk
         filtered_ports = []
         if self.ports_path and self.ports_path.exists():
-            import json
             with open(self.ports_path, "r", encoding="utf-8") as f:
                 ports_list = json.load(f)
             for port in ports_list:
@@ -156,6 +160,30 @@ class MapGenerator:
                         "grid_y": (lat - bounding_box["lat_min"]) * KM_PER_DEGREE,
                         "jurisdiction": port.get("jurisdiction", ""),
                     })
+
+        # =========================================================================
+        # PROCEDURAL HARBOUR CHANNEL MODIFICATIONS (Fully Circular Grid Passes)
+        # =========================================================================
+        ny, nx = height_grid.shape
+        yi, xi = np.indices((ny, nx))
+        
+        # Build kilometer coordinate matrices matching pixel grid indices
+        x_coords_km = xi * resolution_km
+        y_coords_km = yi * resolution_km
+
+        for port in filtered_ports:
+            px_km, py_km = port["grid_x"], port["grid_y"]
+
+            # Calculate continuous Euclidean distances to the center of this specific port
+            distance_map_km = np.hypot(x_coords_km - px_km, y_coords_km - py_km)
+
+            # Override A: Dig a circular harbor channel basin into the terrain matrix
+            ocean_circle_mask = distance_map_km <= port_ocean_radius_km
+            height_grid[ocean_circle_mask] = port_ocean_depth_m
+
+            # Override B: Wipe out biomass hotspot concentrations in a 3km circle
+            biomass_circle_mask = distance_map_km <= port_biomass_clear_radius_km
+            biomass_grid[biomass_circle_mask] = 0.0
 
         return Map(height_grid, biomass_grid, width_km, height_km, filtered_ports)
 

@@ -29,12 +29,18 @@ class SimulationVessel:
         self.y += dy_km
 
 
+# multiagent_fishing/simulation/vessels.py
+
 class PoacherVessel(SimulationVessel):
     def __init__(self, vessel_id: int, name: str, start_x: float, start_y: float, start_heading: float = 0.0):
         super().__init__(vessel_id, name, max_speed_kmh=20.0, start_x=start_x, start_y=start_y, start_heading=start_heading)
         self.cargo = 0.0          
         self.max_cargo = 50.0     
         self.is_caught = False    
+        
+        # Track the exact coordinate values of the harbor where this boat was created
+        self.home_x = start_x
+        self.home_y = start_y
 
 
 class PatrolVessel(SimulationVessel):

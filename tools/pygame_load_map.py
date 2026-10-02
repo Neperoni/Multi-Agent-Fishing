@@ -25,12 +25,13 @@ import multiagent_fishing as mf
 # =========================================================================
 FILE_PATH = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
 PORTS_PATH = "datasets/ports.json"
-RESOLUTION = 1.0  # km per grid cell
+RESOLUTION = 0.5  # km per grid cell
 COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_max": 50.0}
 BIOMASS_SEED = 42
 
 KM_PER_DEGREE = 111.32
-LABEL_THRESHOLD_KM = 400.0  # hide labels when more than this many km are visible
+SHIP_LABEL_THRESHOLD_KM = 9000.0  # hide labels when more than this many km are visible
+PORT_LABEL_THRESHOLD_KM = 700.0
 MAX_SCALE = 60.0            # max zoom, in screen pixels per km
 
 BG_COLOR = (8, 10, 16)
@@ -135,12 +136,72 @@ def draw_legend(screen, font, legend_fish, legend_patrol):
         screen.blit(font.render(name, True, (230, 230, 230)), (48, cy - 8))
 
 
+# Inside tools/pygame_load_map.py (or your main frontend controller loop)
+import random
+import json
+from pathlib import Path
+
+# Cache the name arrays globally in your front-end script memory to avoid slow, repeated disk reads
+_NAME_POOL = None
+
+def spawn_random_poacher_frontend(env, boat_views_list, FISHING_COLOR, names_json_path="datasets/boat_names.json"):
+    """Handles frontend orchestration: generates name, registers sim model, creates visual view."""
+    global _NAME_POOL
+    
+    if not env.map_data.ports:
+        return None
+
+    # Load JSON only once into frontend global memory cache
+    if _NAME_POOL is None:
+        p = Path(names_json_path)
+        if p.exists():
+            with open(p, "r", encoding="utf-8") as f:
+                _NAME_POOL = json.load(f)
+        else:
+            _NAME_POOL = {"fishing_boats": {"first_word": ["MYSTIC"], "last_word": ["WAVE"]}}
+
+    # 1. Selection logic: select random port node from the clean map data list
+    port = random.choice(env.map_data.ports)
+    
+    # 2. Form string name configuration paths
+    pool = _NAME_POOL.get("fishing_boats", {})
+    first = random.choice(pool.get("first_word", ["MYSTIC"]))
+    last = random.choice(pool.get("last_word", ["WAVE"]))
+    vessel_name = f"{first} {last}"
+    
+    # 3. Dynamic increment ID assignments pass
+    # Environment tracks all IDs globally to avoid conflicts
+    next_id = 1
+    while env._is_id_conflicting(next_id):
+        next_id += 1
+
+    # 4. Instantiate pure data model object and attach to mathematical physics frame tracking
+    new_vessel = mf.simulation.PoacherVessel(
+        vessel_id=next_id, 
+        name=vessel_name, 
+        start_x=port["grid_x"], 
+        start_y=port["grid_y"],
+        start_heading=random.uniform(0.0, 2 * math.pi)
+    )
+    
+    # Register with the environment data engine
+    env.add_poacher(new_vessel)
+
+    # 5. Instantly encapsulate it in a rendering layer wrapper object
+    new_view = mf.rendering.BoatView(new_vessel, FISHING_COLOR, boat_size_px=12.0)
+    boat_views_list.append(new_view)
+    
+    return next_id
+
+
 # =========================================================================
 # MAIN LOOP
 # =========================================================================
 def run(env, boat_views, map_view, max_frames=None):
     screen = pygame.display.get_surface()
 
+    # Extract world dimensions directly from the encapsulated map data
+    Wc, Hc = map_view.map_data.shape
     world_w = map_view.map_data.width_km
     world_h = map_view.map_data.height_km
     
@@ -153,7 +214,7 @@ def run(env, boat_views, map_view, max_frames=None):
     port_labels = LabelCache(label_font, 90)
     boat_labels = LabelCache(label_font, 130)
 
-    # Clean dummy layout targets using explicit class setups
+    # Instantiate actual simulation vessel objects for strict type consistency inside the legend
     dummy_fish_vessel = mf.simulation.PoacherVessel(vessel_id=-1, name="DummyFish", start_x=0.0, start_y=0.0, start_heading=0.0)
     dummy_patrol_vessel = mf.simulation.PatrolVessel(vessel_id=-2, name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
 
@@ -163,14 +224,13 @@ def run(env, boat_views, map_view, max_frames=None):
     center_lat = (COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2
     lon_scale = np.cos(np.radians(center_lat))
 
+    # Plain Python structures to hold scrolling alerts and layout states
+    ui_messages = []
     show_labels = True
     dragging = False
     clock = pygame.time.Clock()
     frame = 0
     running = True
-
-    # A simple list of strings to store active alerts
-    ui_messages = []
 
     while running:
         dt = clock.tick(60) / 1000.0
@@ -178,6 +238,7 @@ def run(env, boat_views, map_view, max_frames=None):
         W, H = screen.get_size()
         cam.W, cam.H = W, H
 
+        # 1. HANDLE USER/KEYBOARD INPUTS
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
@@ -211,19 +272,54 @@ def run(env, boat_views, map_view, max_frames=None):
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
         # =========================================================================
-        # UPDATE SIMULATION STEP
+        # 2. RUNTIME LIFECYCLE MANAGEMENT & ACTION ROUTING
         # =========================================================================
-        # Build standard actions mappings to feed headings dynamically into vessels
-        # Keeps boats moving forward along their initial heading setups at half-throttle (0.5)
+        actions = {}
+        views_to_remove = []
+
+        for view in boat_views:
+            vessel = view.vessel
+            
+            # Pass A: Handle general environmental inactivations (groundings, captures)
+            if not vessel.is_active:
+                views_to_remove.append(view)
+                env.remove_vessel(vessel.id)
+                continue
+            
+            # Pass B: Evaluate if a fully loaded poacher has arrived back at its home harbor
+            if hasattr(vessel, "cargo") and vessel.cargo >= vessel.max_cargo:
+                dx_home = vessel.home_x - vessel.x
+                dy_home = vessel.home_y - vessel.y
+                distance_home = math.hypot(dx_home, dy_home)
+                
+                if distance_home <= 1.5:  # Destination reached safely!
+                    print(f"🚢 {vessel.name} successfully unloaded cargo at home harbor and despawned!")
+                    vessel.is_active = False
+                    views_to_remove.append(view)
+                    env.remove_vessel(vessel.id)
+                    
+                    # Deploy a replacement immediately at a random harbor port
+                    spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
+                    continue
+                else:
+                    # Steer straight towards home harbor coords at full throttle (1.0)
+                    target_heading = math.atan2(dx_home, dy_home)
+                    actions[vessel.id] = (target_heading, 1.0)
+            else:
+                # Default Cruise: Maintain initial heading at half throttle (0.5)
+                actions[vessel.id] = (vessel.current_heading, 0.5)
+
+        # Clean out dead visual views to prevent index-skipping loop errors
+        for dead_view in views_to_remove:
+            if dead_view in boat_views:
+                boat_views.remove(dead_view)
+
         # =========================================================================
-        # UPDATE SIMULATION STEP
+        # 3. ADVANCE SIMULATION STATE & INTERCEPT LOGGING
         # =========================================================================
-        actions = {v.vessel.id: (v.vessel.current_heading, 0.5) for v in boat_views}
-        
-        # 1. Capture the logs dictionary from the step
         step_events = env.step(actions, dt=dt)
         
-        # 2. Extract events and append plain text strings directly to our list
+        # Parse returned physics events directly into the text alert lists
         for app in step_events.get("apprehensions", []):
             p_id, pat_id = app["poacher_id"], app["by_patrol_id"]
             poacher_name = env.poachers[p_id].name if p_id in env.poachers else f"Poacher {p_id}"
@@ -233,47 +329,69 @@ def run(env, boat_views, map_view, max_frames=None):
         for g_id in step_events.get("groundings", []):
             name = env.poachers[g_id].name if g_id in env.poachers else (env.patrol_boats[g_id].name if g_id in env.patrol_boats else f"Vessel {g_id}")
             ui_messages.append(f"🏝️ CRASH: {name} ran aground on land!")
+            
+            # Spawn a replacement boat automatically following a terrain collision
+            spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
 
         for o_id in step_events.get("out_of_bounds", []):
             name = env.poachers[o_id].name if o_id in env.poachers else (env.patrol_boats[o_id].name if o_id in env.patrol_boats else f"Vessel {o_id}")
             ui_messages.append(f"🌊 BOUNDARY: {name} sailed out of bounds!")
+            
+            # Spawn a replacement boat automatically following a boundary breach
+            spawn_random_poacher_frontend(env, boat_views, FISHING_COLOR)
 
-        # Keep only the last 5 messages so they don't fill up the screen
-        if len(ui_messages) > 5:
-            ui_messages = ui_messages[-5:]
+        # Enforce history limit: remove oldest item if list size exceeds 20 items
+        if len(ui_messages) > 20:
+            ui_messages = ui_messages[-20:]
 
-        # Visibility pass
-        labels_on = show_labels and (W / cam.scale <= LABEL_THRESHOLD_KM)
+        # =========================================================================
+        # 4. RENDERING PASSES
+        # =========================================================================
+        vessel_labels_on = show_labels and (W / cam.scale <= SHIP_LABEL_THRESHOLD_KM)
+        port_labels_on = show_labels and (W / cam.scale <= PORT_LABEL_THRESHOLD_KM)
 
-        # Drawing steps
+
+        # Draw map backgrounds and active port vectors
         map_view.draw_background(screen, cam)
-        map_view.draw_ports(screen, cam, labels_on, port_labels)
+        map_view.draw_ports(screen, cam, port_labels_on, port_labels)
 
+        # Polymorphically render remaining active ships
         for view in boat_views:
-            view.draw(screen, cam, labels_on, boat_labels)
+            view.draw(screen, cam, vessel_labels_on, boat_labels)
 
+        # Render overlays, legends, and scales
         draw_legend(screen, font, legend_fish, legend_patrol)
         draw_scale_bar(screen, cam, font)
 
-
         # --- Draw Scrolling Messages List ---
-        msg_y = 50  # Start position on the right side of the screen
+        msg_y = 50
         for msg in ui_messages:
             txt_surf = font.render(msg, True, (255, 255, 255))
             
-            # Simple translucent background box for readability
-            bg_box = pygame.Surface((320, txt_surf.get_height() + 4), pygame.SRCALPHA)
+            # FIXED: Increased container width from 320 to 380 to fit longer text strings safely
+            bg_box = pygame.Surface((380, txt_surf.get_height() + 4), pygame.SRCALPHA)
             bg_box.fill((10, 10, 15, 180))
             bg_box.blit(txt_surf, (5, 2))
             
-            screen.blit(bg_box, (screen.get_width() - 340, msg_y))
+            # FIXED: Shifted position left to screen.get_width() - 400 to account for the wider boxes
+            screen.blit(bg_box, (screen.get_width() - 400, msg_y))
             msg_y += txt_surf.get_height() + 8
 
 
-        # HUD Text Output Pass
+
+        # --- Draw Bottom HUD Bar Metrics ---
         mx, my = pygame.mouse.get_pos()
         wx, wy = cam.to_world(mx, my)
-        info = f"x {wx:7.1f} km  y {wy:7.1f} km"
+        
+        # Calculate simulation clock metrics out of total elapsed hours
+        total_hours = env.sim_time_hours
+        sim_days = int(total_hours // 24)
+        sim_hours = int(total_hours % 24)
+        sim_minutes = int((total_hours * 60) % 60)
+        
+        # Build HUD metadata string with the time signature appended directly to the front
+        info = f"TIME: {sim_days:02d}d::{sim_hours:02d}h::{sim_minutes:02d}m"
+        info += f"  |  x {wx:7.1f} km  y {wy:7.1f} km"
         info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
         info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
         

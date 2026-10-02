@@ -4,7 +4,7 @@
   {"name": "Pacific City", "lat": 45.203, "lon": -123.962, "jurisdiction": "Oregon"},
   {"name": "Depoe Bay", "lat": 44.811, "lon": -124.062, "jurisdiction": "Oregon"},
   {"name": "Newport (Yaquina Bay)", "lat": 44.624, "lon": -124.043, "jurisdiction": "Oregon"},
-  {"name": "Florence (Siuslaw River)", "lat": 43.969, "lon": -124.103, "jurisdiction": "Oregon"},
+  {"name": "Florence (Siuslaw River Entrance)", "lat": 43.9684, "lon": -124.148, "jurisdiction": "Oregon"},
   {"name": "Winchester Bay", "lat": 43.680, "lon": -124.195, "jurisdiction": "Oregon"},
   {"name": "Charleston (Coos Bay)", "lat": 43.344, "lon": -124.321, "jurisdiction": "Oregon"},
   {"name": "Bandon (Coquille River)", "lat": 43.122, "lon": -124.408, "jurisdiction": "Oregon"},
