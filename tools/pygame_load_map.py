@@ -34,6 +34,9 @@ BIOMASS_SEED = 42
 KM_PER_DEGREE = 111.32
 SHIP_LABEL_THRESHOLD_KM = 4000.0  # Basically always on
 PORT_LABEL_THRESHOLD_KM = 700.0   
+CARGO_LABEL_THRESHOLD_KM = 350.0  # Cargo displays when fairly close
+VELOCITY_LABEL_THRESHOLD_KM = 150.0 # Velocity displays only at extreme zoom
+
 MAX_SCALE = 60.0            # max zoom, in screen pixels per km
 
 BG_COLOR = (8, 10, 16)
@@ -184,15 +187,16 @@ def draw_legend(screen, font, legend_fish, legend_patrol):
         cy = 10 + 18 + 24 * i
         if kind == "fish":
             legend_fish.vessel.x, legend_fish.vessel.y = 28, cy
-            legend_fish.draw(screen, ui_cam, labels_on=False, label_cache=None)
+            legend_fish.draw(screen, ui_cam, labels_on=False, cargo_on=False, velocity_on=False, label_cache=None)
         elif kind == "patrol":
             legend_patrol.vessel.x, legend_patrol.vessel.y = 28, cy
-            legend_patrol.draw(screen, ui_cam, labels_on=False, label_cache=None)
+            legend_patrol.draw(screen, ui_cam, labels_on=False, cargo_on=False, velocity_on=False, label_cache=None)
         else:
             pygame.gfxdraw.filled_circle(screen, 28, cy, 5, PORT_COLOR)
             pygame.gfxdraw.aacircle(screen, 28, cy, 5, (255, 255, 255))
             
         screen.blit(font.render(name, True, (230, 230, 230)), (48, cy - 8))
+
 
 
 
@@ -292,7 +296,26 @@ def run(env, boat_views, map_view, max_frames=None):
         # UPDATE SIMULATION PHYSICS STEP
         # =========================================================================
         if not is_paused:
-            actions = {v.vessel.id: (v.vessel.current_heading, 0.5) for v in boat_views}
+
+            actions = {}
+        #generating dummy actions
+            for v in boat_views:
+                vessel_id = v.vessel.id
+                heading = v.vessel.current_heading
+                
+                # Check if this vessel is a poacher to supply the fish_toggle parameter
+                if hasattr(v.vessel, 'is_fishing'):
+                    # For a simple test, we can keep its current fishing toggle state,
+                    # or force it to fish (1) if it isn't full yet.
+                    fish_toggle = 1 if v.vessel.cargo < v.vessel.max_cargo else 0
+                    actions[vessel_id] = (heading, 0.5, fish_toggle)
+                else:
+                    # Patrol boats only accept (heading, speed)
+                    actions[vessel_id] = (heading, 0.5)
+
+
+        #Main physics call
+        # =========================================================================
             step_events = env.step(actions, dt=dt)
             
             for app in step_events.get("apprehensions", []):
@@ -329,12 +352,17 @@ def run(env, boat_views, map_view, max_frames=None):
         
         ports_text_on = show_labels and (view_width_km <= PORT_LABEL_THRESHOLD_KM)
         ships_text_on = show_labels and (view_width_km <= SHIP_LABEL_THRESHOLD_KM)
+        cargo_text_on = show_labels and (view_width_km <= CARGO_LABEL_THRESHOLD_KM)
+        velocity_text_on = show_labels and (view_width_km <= VELOCITY_LABEL_THRESHOLD_KM)
 
         map_view.draw_background(screen, cam)
         map_view.draw_ports(screen, cam, ports_text_on, port_labels)
         
         for view in boat_views:
-            view.draw(screen, cam, ships_text_on, boat_labels)
+            # Updated to pass the new boolean tracking triggers
+            view.draw(screen, cam, ships_text_on, cargo_text_on, velocity_text_on, boat_labels)
+
+        # =========================================================================
 
         draw_legend(screen, font, legend_fish, legend_patrol)
         draw_scale_bar(screen, cam, font)

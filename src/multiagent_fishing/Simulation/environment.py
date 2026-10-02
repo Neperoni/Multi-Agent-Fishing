@@ -16,7 +16,8 @@ class Environment:
         
         self._next_id = 1
         self.sim_time_hours = 0.0
-        _registered_references = {}
+        # FIXED: Bound this to self so remove_vessel can access it safely
+        self._registered_references = set() 
 
     def add_vessel(self, vessel: SimulationVessel) -> int:
         """
@@ -27,6 +28,9 @@ class Environment:
         if is_already_added:
             print(f"Simulation Warning: Ignored duplicate request for {vessel.name}.")
             return vessel.id
+
+        # 1. Track the unique object memory reference
+        self._registered_references.add(id(vessel))
 
         # 2. Assign the next available simulation integer ID
         vessel.id = self._get_next_id()
@@ -40,8 +44,6 @@ class Environment:
             raise TypeError(f"Cannot add unknown vessel subclass type: {type(vessel)}")
             
         return vessel.id
-
-
 
     def remove_vessel(self, vessel_id: int) -> bool:
         """Removes a vessel and clears its tracking states entirely."""
@@ -58,7 +60,6 @@ class Environment:
             return True
         return False
     
-    
     def _get_next_id(self) -> int:
         """Finds the next unassigned sequential integer ID token."""
         while (self._next_id in self.poachers) or (self._next_id in self.patrol_boats):
@@ -71,14 +72,9 @@ class Environment:
     def all_vessels(self) -> List[SimulationVessel]:
         return list(self.poachers.values()) + list(self.patrol_boats.values())
 
-# multiagent_fishing/simulation/Environment.py
-
-class Environment:
-    # ... (add_vessel and helper methods remain unchanged)
-
     def step(self, actions: dict, dt: float = 0.25) -> dict:
         """
-        Advances the simulation.
+        Advances the simulation physics and environments constraints.
         :param actions: Dict mapping ID to a tuple:
                         - Poachers: (heading_rad, speed_fraction, fishing_toggle)
                         - Patrols:  (heading_rad, speed_fraction)
@@ -118,7 +114,6 @@ class Environment:
 
         self._check_patrol_interceptions(logs)
         return logs
-
 
     def _enforce_environmental_constraints(self, vessel: SimulationVessel, logs: dict):
         if not self.map_data.is_in_bounds(vessel.x, vessel.y):
