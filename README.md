@@ -6,6 +6,65 @@
 
 ---
 
+# 🌊 MARL Fishing Simulator Setup Guide
+
+A multi-agent reinforcement learning simulation interface tracking fishing and patrol vessel interactions using Pygame, NumPy, and Xarray.
+
+---
+
+## 🚀 Quick Start Instructions
+
+Follow these steps to configure your local Python environment and boot up the simulation viewer using **uv**.
+
+### 1. Install `uv`
+If you do not have `uv` installed on your machine yet, open your terminal (or PowerShell on Windows) and execute the appropriate platform command:
+
+* **Windows (PowerShell):**
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh | iex"
+  ```
+* **macOS / Linux:**
+  ```bash
+  curl -LsSf https://astral.sh | sh
+  ```
+
+*Restart your terminal window after installation finishes to ensure the `uv` command is available in your PATH.*
+
+### 2. Configure the Virtual Environment & Dependencies
+Navigate into your project repository directory and initialize your environment. `uv` will automatically discover your source structure and resolve all required tracking modules:
+
+```bash
+# 1. Navigate to the project root
+cd Multi-Agent-Fishing
+
+# 2. Create a managed virtual environment and install dependencies
+uv venv
+uv pip install -e .
+```
+*(If your project dependencies aren't tracked inside a `pyproject.toml` or `setup.py` layout yet, you can explicitly run: `uv pip install pygame-ce numpy xarray scipy opensimplex` instead.)*
+
+### 3. Start the Simulation Program
+Run the primary frontend rendering script wrapped through the local virtual environment environment context:
+
+```bash
+uv run tools/pygame_load_map.py
+```
+
+---
+
+## 🎮 Engine Telemetry Controls
+
+Once the viewport initializes, you can control map parameters and toggle interactive telemetry displays using your keyboard and mouse:
+
+* **Movement Matrix:** Hold **`W, A, S, D`** (or Arrow Keys) to pan across ocean bounds.
+* **Camera Scaling:** Use your **Mouse Scroll Wheel** to zoom directly into specific targets.
+* **Biomass Density Overlay:** Press **`H`** to toggle heat-mapped fish concentrations.
+* **Global Text Labels:** Press **`L`** to quickly hide or show map entity labels.
+* **Reset Position:** Press **`R`** to instantly snap the camera frame back to its original view scope.
+* **Pause Simulation:** Press **`Spacebar`** to freeze active vessel physics updates.
+* **Measuring Ruler Tool:** **Right-Click and Drag** your cursor between any two points to instantly compute continuous Euclidean range tracking distance (km) and compass bearing degrees (°).
+
+
 ## Terrain Data
 
 ### Canadian Government data 
