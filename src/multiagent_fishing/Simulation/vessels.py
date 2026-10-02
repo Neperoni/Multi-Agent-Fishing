@@ -1,6 +1,5 @@
 import numpy as np
-import src.config as config 
-
+from .. import config 
 
 class SimulationVessel:
     def __init__(self, name, max_speed_kmh, start_x=0.0, start_y=0.0):

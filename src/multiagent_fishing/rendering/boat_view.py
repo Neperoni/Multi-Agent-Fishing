@@ -1,6 +1,9 @@
-# =========================================================================
-# VESSEL PRESENTATION LAYER (BoatView Wrapper)
-# =========================================================================
+# multiagent_fishing/rendering/boat_view.py
+
+import math
+import pygame
+import pygame.gfxdraw
+
 class BoatView:
     """
     Renders a simulation vessel onto a Pygame surface using camera tracking coordinates.
@@ -10,15 +13,15 @@ class BoatView:
     HULL_SQUARE = [(-0.3, 0.2), (0.3, 0.2), (0.3, -0.5), (-0.3, -0.5)]
     BOW_TRIANGLE = [(-0.3, 0.2), (0.3, 0.2), (0.0, 0.6)]
 
-    def __init__(self, vessel, color, scale_multiplier=1.0):
+    def __init__(self, vessel, color, boat_size_px=14.0):
         """
         :param vessel: An instance of SimulationVessel (or its subclasses)
         :param color: The RGB color tuple used to fill the hull
-        :param scale_multiplier: Relative size modifier for different vessel classes
+        :param boat_size_px: The actual final size of the boat on the screen in pixels
         """
         self.vessel = vessel
         self.color = color
-        self.mult = scale_multiplier
+        self.size = boat_size_px
 
     def draw(self, surf, cam, labels_on, label_cache):
         """Renders the vessel and its label if it's within the visible viewport."""
@@ -36,11 +39,10 @@ class BoatView:
         # Vector rotation: 0 radians points North/Up, increasing clockwise
         heading = self.vessel.current_heading
         c, s = math.cos(heading), math.sin(heading)
-        size = BOAT_SIZE_PX * self.mult
 
         def transform_points(pts):
-            return [(round(sx + (vx * c + vy * s) * size), 
-                     round(sy + (vx * s - vy * c) * size)) for vx, vy in pts]
+            return [(round(sx + (vx * c + vy * s) * self.size), 
+                     round(sy + (vx * s - vy * c) * self.size)) for vx, vy in pts]
 
         # Draw the physical hull segments
         for poly in (transform_points(self.HULL_SQUARE), transform_points(self.BOW_TRIANGLE)):

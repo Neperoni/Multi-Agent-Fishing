@@ -2,8 +2,8 @@
 import rasterio
 import numpy as np
 from pathlib import Path
-from src.config import PIXELS_PER_KM, TIME_STEP_HOURS
-from src.vessels import PoacherVessel, PatrolVessel
+from ..config import PIXELS_PER_KM, TIME_STEP_HOURS
+from .vessels import PoacherVessel, PatrolVessel
 import xarray as xr
 
 class MaritimeSimEnvironment:

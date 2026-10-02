@@ -23,6 +23,7 @@ import pygame.gfxdraw
 # Import the decoupled module namespace
 import multiagent_fishing as mf
 
+
 # =========================================================================
 # CONFIG
 # =========================================================================
@@ -230,7 +231,7 @@ def draw_legend(screen, font):
 # =========================================================================
 # MAIN LOOP
 # =========================================================================
-def run(map_data, fishing_boats, patrol_boats, max_frames=None):
+def run(map_data, boat_views, max_frames=None):
     screen = pygame.display.get_surface()
 
     # Extract clean raw numpy grids directly out of the map data instance
@@ -314,7 +315,7 @@ def run(map_data, fishing_boats, patrol_boats, max_frames=None):
         def visible(sx, sy):
             return -margin <= sx <= W + margin and -margin <= sy <= H + margin
 
-        # --- ports ---
+        # --- ports (Reading directly from map_data) ---
         for p in map_data.ports:
             sx, sy = cam.to_screen(p["grid_x"], p["grid_y"])
             if not visible(sx, sy):
@@ -326,19 +327,9 @@ def run(map_data, fishing_boats, patrol_boats, max_frames=None):
                 lbl = port_labels.get(p["name"], (255, 255, 255))
                 screen.blit(lbl, (ix + 9, iy - lbl.get_height() // 2 + 4))
 
-        # --- boats ---
-        for fleet, color, mult, default_prefix in (
-            (fishing_boats, FISHING_COLOR, 1.0, "F"),
-            (patrol_boats, PATROL_COLOR, 1.15, "P"),
-        ):
-            for i, b in enumerate(fleet):
-                sx, sy = cam.to_screen(b["x_km"], b["y_km"])
-                if not visible(sx, sy):
-                    continue
-                draw_boat(screen, sx, sy, b.get("heading", 0.0), BOAT_SIZE_PX * mult, color)
-                if labels_on:
-                    lbl = boat_labels.get(b.get("name", f"{default_prefix}{i + 1}"), color)
-                    screen.blit(lbl, (round(sx) + 10, round(sy) - 10 - lbl.get_height()))
+        # --- boats (Clean polymorphic loop over all unified BoatView items) ---
+        for view in boat_views:
+            view.draw(screen, cam, labels_on, boat_labels)
 
         # --- HUD ---
         draw_legend(screen, font)
@@ -369,7 +360,6 @@ def run(map_data, fishing_boats, patrol_boats, max_frames=None):
         if max_frames is not None and frame >= max_frames:
             break
 
-
 def main():
     pygame.init()
     pygame.display.set_mode((1280, 900), pygame.RESIZABLE)
@@ -382,17 +372,30 @@ def main():
 
     ports = map_data.ports
 
-    fishing_boats = [
-        {"x_km": 45.0, "y_km": 120.0, "heading": np.pi / 4, "name": "ORION"},
-        {"x_km": 90.0, "y_km": 340.0, "heading": np.pi, "name": "MARINER"},
-        {"x_km": 150.0, "y_km": 510.0, "heading": 1.5 * np.pi, "name": "SEAWOLF"},
+    # Instantiate the underlying pure simulation layer entities
+    sim_poachers = [
+        mf.simulation.PoacherVessel("ORION", start_x=45.0, start_y=120.0),
+        mf.simulation.PoacherVessel("MARINER", start_x=90.0, start_y=340.0),
+        mf.simulation.PoacherVessel("SEAWOLF", start_x=150.0, start_y=510.0)
     ]
-    patrol_boats = [
-        {"x_km": 60.0, "y_km": 150.0, "heading": 0.0, "name": "PATROL_A"},
-        {"x_km": 110.0, "y_km": 400.0, "heading": 0.75 * np.pi, "name": "PATROL_B"},
+    sim_patrols = [
+        mf.simulation.PatrolVessel("PATROL_A", start_x=60.0, start_y=150.0),
+        mf.simulation.PatrolVessel("PATROL_B", start_x=110.0, start_y=400.0)
     ]
 
-    run(map_data, fishing_boats, patrol_boats)
+    # Initialize their headings for display
+    sim_poachers[0].current_heading = np.pi / 4
+    sim_poachers[1].current_heading = np.pi
+    sim_poachers[2].current_heading = 1.5 * np.pi
+    sim_patrols[1].current_heading = 0.75 * np.pi
+
+    boat_views = []
+    for p in sim_poachers:
+        boat_views.append(mf.rendering.BoatView(p, FISHING_COLOR, boat_size_px=12.0))
+    for p in sim_patrols:
+        boat_views.append(mf.rendering.BoatView(p, PATROL_COLOR, boat_size_px=12.0))
+
+    run(map_data, boat_views)
     pygame.quit()
 
 

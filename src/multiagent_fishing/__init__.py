@@ -1,6 +1,8 @@
 # multiagent_fishing/__init__.py
 
-from .map_generator import MapGenerator, Map
+from . import simulation
+from . import rendering
 
-# Defines what is exposed when a user runs: from multiagent_fishing import *
-__all__ = ["MapGenerator", "Map"]
+
+# Expose data infrastructure directly at the root level
+from .map_generator import MapGenerator, Map
