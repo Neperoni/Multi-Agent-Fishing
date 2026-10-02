@@ -24,7 +24,7 @@
 ## Ports & Harbor Mechanics
 
 ### Port Locations
-* Synthetic data generated via AI, likely based on NOAA and DFO port locations.
+* data generated via AI, seems reasonable but no guarantee of veracity.
 
 ### Vessel Spawn Logic
 * Vessels are assigned a permanent **home harbor**.
