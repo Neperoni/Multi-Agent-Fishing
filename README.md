@@ -1,69 +1,65 @@
-# Multi-Agent-Fishing
-COMP4900I / COMP5801G  Final project
-SWEEEEEEEEET
+# Multi-Agent Fishing
+**COMP4900I / COMP5801G — Final Project**  
+*SWEEEEEEEEET*
 
-# Terrain data:
-https://open.canada.ca/data/en/dataset/e6e11b99-f0cc-44f7-f5eb-3b995fb1637e
-10m resolution 7Gb💀, downscale significantly
+<img width="360" height="272" alt="cat_waving" src="https://github.com" />
 
-# Updated terrain data:
-Gebco 2026 data set
-(user defined area)
-n55.0 to s35.0, w-135.0 to e-118.0
+---
 
-## Attribution:
-If the data sets are used in a presentation or publication then we ask that you acknowledge the source. This should be of the form:
+## 🗺️ Terrain Data
 
-GEBCO Bathymetric Compilation Group 2026 (2026). The GEBCO_2026 Grid - a continuous terrain model for oceans and land at 15 arc-second intervals. doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
-Link: https://doi.org/10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
+### Baseline Data (Unused)
+* **Source:** [Open Government Canada](https://canada.ca)
+* **Details:** 10m resolution (7 GB file size).
+* **Status:** Discarded due to file size; requires significant downscaling.
 
-# Ports:
-## ai generated, but probably sourced from noaa and dfo
+### Updated Active Data
+* **Source:** GEBCO 2026 Dataset (15 arc-second intervals)
+* **User-Defined Area Bounds:** North 55.0 to South 35.0 | West -135.0 to East -118.0
+* **Attribution Requirement:**
+  > GEBCO Bathymetric Compilation Group 2026 (2026). The GEBCO_2026 Grid - a continuous terrain model for oceans and land at 15 arc-second intervals. [doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa](https://doi.org)
 
+---
 
-# Vessels are assumed to have a "home harbour"
-# They spawn at that harbour, they got fish, then they return to that harbour
-# Then a new boat will spawn at a different harbour, to prevent spawn camping
+## ⚓ Ports & Harbor Mechanics
 
+### Port Locations
+* Synthetic data generated via AI, modeled after official NOAA and DFO port locations.
 
-COMP4900I / COMP5801G  Final project   
-SWEEEEEEEEET   
-<img width="360" height="272" alt="cat_waving" src="https://github.com/user-attachments/assets/fa226d6d-997c-4e22-b1ab-da336e7ed1da" />
+### Vessel Spawn Logic
+* Vessels are assigned a permanent **home harbor**.
+* **Cycle:** Spawn at home harbor $\rightarrow$ Transit to hotspot $\rightarrow$ Fish $\rightarrow$ Return to home harbor.
+* To prevent spawn-camping issues, consecutive new boats cycle through different starting harbors.
 
+---
 
-# Research:
+## 🔬 Research & Simulation Parameters
 
-According to chat-gpt:
-Commerical fishing boats travel at 18-25km/h during transit
-And 5-11km/h during fishing
+### Agent Movement & Timings
 
-it takes about 3 hours to transit from dock to hotspot
-then 8 hours to fish
+#### Commercial Fishing Boats
+* **Transit Speed:** 18–25 km/h
+* **Fishing Speed:** 5–11 km/h
+* **Timeline:** 3-hour transit to hotspot $\rightarrow$ 8-hour fishing window
 
-Patrol boats transit at 45-48 km/h 
-there are 65km/h deployable dinghys
-patrol boats have a 20km radar view
+#### Patrol Boats
+* **Transit Speed:** 45–48 km/h
+* **Deployable Dinghies:** 65 km/h max speed
+* **Vision:** 20 km radar radius
 
+---
 
-## Fishing Hotspots:
-fishing hotspots near vancouver are about 50-80km offshore
-this is where the continental shelf drops off, and we get upwelling
-salmon, halibut, tuna
+## 🐟 Fishing Hotspots
 
-hotspots are 5-20km across
+### Geographic Characteristics
+* **Location:** Located 50–80 km offshore where the continental shelf drops off, creating nutrient-rich upwelling.
+* **Target Species:** Salmon, Halibut, Tuna.
+* **Dimensions:** Zones span roughly 5–20 km across and follow the natural curvature of the coastline.
+* **Depth Profiles (Inferred from Global Fishing Watch data):**
+  * Primary depth: 100–150 meters (a few kilometers inland from the continental shelf edge).
+  * Deep-water exceptions: Up to 500 meters (likely corresponding to specific gear/species like crab).
 
-GFW has maps of fishing activity, dataset is not freely downloadable, but we can view it and get an idea of how hospots look.
-
-based on looking at GFW data, it looks like fishing hotspots are usually at 100-150m depth,
-a couple km in from the edge of the continental shelf
-one spot was 500m depth
-I suppose theres different kinds of fish and equipment, like maybe its crabs or something
-
-The hot spots follow the curvature of the coast mostly
-
-
-### Notable hotspots:
-#### la perouse bank 35-50km
-deep open ocean near cape scott 40-60kmm
-deep offshore (tang gwan hacxwitak tsigis)
-80-150km
+### Notable Hotspots to Model
+* **La Perouse Bank:** 35–50 km offshore.
+* **Cape Scott Deep Ocean:** 40–60 km offshore.
+* **Tang.ɢwan — ḥačxʷiqak — Tsig̱is (Deep Offshore Marine Protected Area):** 80–150 km offshore.
