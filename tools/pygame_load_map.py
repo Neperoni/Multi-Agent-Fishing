@@ -231,19 +231,14 @@ def draw_legend(screen, font):
 # =========================================================================
 # MAIN LOOP
 # =========================================================================
-def run(map_data, boat_views, max_frames=None):
+def run(boat_views, map_view, max_frames=None):
     screen = pygame.display.get_surface()
 
-    # Extract clean raw numpy grids directly out of the map data instance
-    height = map_data.height_data
-    hotspots = map_data.biomass_data
-
-    base_rgb = colorize_height(height)
-    surf_plain = to_surface(base_rgb)
-    surf_hot = to_surface(composite_hotspots(base_rgb, hotspots))
-
-    Hc, Wc = map_data.shape
-    world_w, world_h = map_data.width_km, map_data.height_km
+    # Extract world dimensions directly from the encapsulated map data
+    Wc, Hc = map_view.map_data.shape
+    world_w = map_view.map_data.width_km
+    world_h = map_view.map_data.height_km
+    
     cam = Camera(world_w, world_h)
     cam.fit(*screen.get_size())
 
@@ -253,10 +248,10 @@ def run(map_data, boat_views, max_frames=None):
     port_labels = LabelCache(label_font, 90)
     boat_labels = LabelCache(label_font, 130)
 
-    lon_scale = np.cos(np.radians((COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2))
+    center_lat = (COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2
+    lon_scale = np.cos(np.radians(center_lat))
 
-    show_hot, show_labels = True, True
-    layer, layer_key = None, None
+    show_labels = True
     dragging = False
     clock = pygame.time.Clock()
     frame = 0
@@ -275,7 +270,8 @@ def run(map_data, boat_views, max_frames=None):
                 if ev.key == pygame.K_ESCAPE:
                     running = False
                 elif ev.key == pygame.K_h:
-                    show_hot = not show_hot
+                    # Toggle biomass overlay inside the map view object
+                    map_view.show_biomass = not map_view.show_biomass
                 elif ev.key == pygame.K_l:
                     show_labels = not show_labels
                 elif ev.key == pygame.K_r:
@@ -300,38 +296,27 @@ def run(map_data, boat_views, max_frames=None):
         if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
-        key = (cam.cx, cam.cy, cam.scale, W, H, show_hot)
-        if key != layer_key:
-            if layer is None or layer.get_size() != (W, H):
-                layer = pygame.Surface((W, H)).convert()
-            layer.fill(BG_COLOR)
-            draw_map(layer, cam, surf_hot if show_hot else surf_plain, RESOLUTION)
-            layer_key = key
-        screen.blit(layer, (0, 0))
-
+        # =========================================================================
+        # VISIBILITY CALCULATIONS (Calculated up front once per frame)
+        # =========================================================================
         labels_on = show_labels and (W / cam.scale <= LABEL_THRESHOLD_KM)
-        margin = 80
 
-        def visible(sx, sy):
-            return -margin <= sx <= W + margin and -margin <= sy <= H + margin
+        # =========================================================================
+        # RENDERING PASSES (Delegated to View Layers)
+        # =========================================================================
+        # 1. Blit the topographic slice layer 
+        map_view.draw_background(screen, cam)
 
-        # --- ports (Reading directly from map_data) ---
-        for p in map_data.ports:
-            sx, sy = cam.to_screen(p["grid_x"], p["grid_y"])
-            if not visible(sx, sy):
-                continue
-            ix, iy = round(sx), round(sy)
-            pygame.gfxdraw.filled_circle(screen, ix, iy, 5, PORT_COLOR)
-            pygame.gfxdraw.aacircle(screen, ix, iy, 5, (255, 255, 255))
-            if labels_on:
-                lbl = port_labels.get(p["name"], (255, 255, 255))
-                screen.blit(lbl, (ix + 9, iy - lbl.get_height() // 2 + 4))
+        # 2. Render localized port vector nodes (Now purely accepts the final boolean)
+        map_view.draw_ports(screen, cam, labels_on, port_labels)
 
-        # --- boats (Clean polymorphic loop over all unified BoatView items) ---
+        # 3. Draw active fleet boats via polymorphic display wrappers
         for view in boat_views:
             view.draw(screen, cam, labels_on, boat_labels)
 
-        # --- HUD ---
+        # =========================================================================
+        # HUD INFRASTRUCTURE TEXT BLOCKS
+        # =========================================================================
         draw_legend(screen, font)
         draw_scale_bar(screen, cam, font)
 
@@ -341,11 +326,17 @@ def run(map_data, boat_views, max_frames=None):
         info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
         info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
         
-        col = int(wx // map_data.km_per_pixel) if map_data.km_per_pixel > 0 else 0
-        row = int(wy // map_data.km_per_pixel) if map_data.km_per_pixel > 0 else 0
+        # Safely sample grid cells using the decoupled map telemetry getters
+        col = int(wx // map_view.map_data.km_per_pixel) if map_view.map_data.km_per_pixel > 0 else 0
+        row = int(wy // map_view.map_data.km_per_pixel) if map_view.map_data.km_per_pixel > 0 else 0
         
-        if 0 <= col < Wc and 0 <= row < Hc:
-            info += f"  elev {map_data.get_height_at_pixel(col, row):7.0f} m  biomass {map_data.get_biomass_at_pixel(col, row):.2f}"
+        if 0 <= col < map_view.map_data.cols and 0 <= row < map_view.map_data.rows:
+            elev = map_view.map_data.get_height_at_pixel(col, row)
+            biomass = map_view.map_data.get_biomass_at_pixel(col, row)
+            info += f"  elev {elev:7.0f} m  biomass {biomass:.2f}"
+        else:
+            # Gracefully handle off-map coordinates instead of crashing
+            info += "  elev ------- m  biomass ----"
             
         hint = "drag: pan | wheel: zoom | H: overlay | L: labels | R: reset"
         bar = pygame.Surface((W, 24), pygame.SRCALPHA)
@@ -360,6 +351,7 @@ def run(map_data, boat_views, max_frames=None):
         if max_frames is not None and frame >= max_frames:
             break
 
+
 def main():
     pygame.init()
     pygame.display.set_mode((1280, 900), pygame.RESIZABLE)
@@ -367,10 +359,12 @@ def main():
 
     print("Loading data via package MapGenerator...")
     # Pass PORTS_PATH directly into the generator constructor
+    # --- Setup section in main() ---
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
-    map_data = generator.get_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
+    map_data = generator.get_map(RESOLUTION, COASTAL_SUBSET)
 
-    ports = map_data.ports
+    # Create the presentation view handler
+    map_view = mf.rendering.MapView(map_data)
 
     # Instantiate the underlying pure simulation layer entities
     sim_poachers = [
@@ -395,7 +389,7 @@ def main():
     for p in sim_patrols:
         boat_views.append(mf.rendering.BoatView(p, PATROL_COLOR, boat_size_px=12.0))
 
-    run(map_data, boat_views)
+    run(boat_views, map_view)
     pygame.quit()
 
 
