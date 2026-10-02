@@ -8,12 +8,12 @@
 
 ## Terrain Data
 
-### Baseline Data (Unused)
+### Canadian Government data 
 * **Source:** [Open Government Canada](https://canada.ca)
 * **Details:** 10m resolution (7 GB file size).
-* **Status:** Discarded due to file size; requires significant downscaling.
+* **Status:** Unused
 
-### Updated Active Data
+### Gebco Data
 * **Source:** GEBCO 2026 Dataset (15 arc-second intervals)
 * **User-Defined Area Bounds:** North 55.0 to South 35.0 | West -135.0 to East -118.0
 * **Attribution Requirement:**
@@ -24,7 +24,7 @@
 ## Ports & Harbor Mechanics
 
 ### Port Locations
-* Synthetic data generated via AI, likely modeled after official NOAA and DFO port locations.
+* Synthetic data generated via AI, likely based on NOAA and DFO port locations.
 
 ### Vessel Spawn Logic
 * Vessels are assigned a permanent **home harbor**.
