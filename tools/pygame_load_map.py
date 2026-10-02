@@ -10,7 +10,7 @@ Controls
     R .................. reset view
     Esc ................ quit
 
-Requires: pygame-ce (or pygame >= 2), numpy, xarray, scipy, opensimplex
+Requires: pygame-ce (or pygame >= 2), numpy, xarray, scipy, opensimplex, multiagent_fishing
 """
 import json
 import math
@@ -19,19 +19,18 @@ from pathlib import Path
 import numpy as np
 import pygame
 import pygame.gfxdraw
-import xarray as xr
-from opensimplex import OpenSimplex
-from scipy.ndimage import distance_transform_edt
+
+# Import the decoupled module namespace
+import multiagent_fishing as mf
 
 # =========================================================================
 # CONFIG
 # =========================================================================
 FILE_PATH = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
 PORTS_PATH = "datasets/ports.json"
-CACHE_PATH = Path("datasets/cache/marl_cache.npz")
 RESOLUTION = 1.0  # km per grid cell
 COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_max": 50.0}
-HOTSPOT_PARAMS = {"seed": 42, "noise_feature_scale": 30.0, "fade_margin_px": 5.0}
+BIOMASS_SEED = 42
 
 KM_PER_DEGREE = 111.32
 V_MIN, V_MAX = -5000.0, 2000.0
@@ -43,24 +42,6 @@ BG_COLOR = (8, 10, 16)
 FISHING_COLOR = (255, 204, 0)
 PATROL_COLOR = (0, 255, 102)
 PORT_COLOR = (255, 0, 127)
-
-
-# =========================================================================
-# DATA (same logic as the matplotlib version)
-# =========================================================================
-def generate_dynamic_hotspots(height_grid, seed=42, noise_feature_scale=30.0, fade_margin_px=5.0):
-    mask = (height_grid >= -220) & (height_grid <= -80)
-    if np.any(mask):
-        ramp = np.clip(distance_transform_edt(mask) / fade_margin_px, 0.0, 1.0)
-    else:
-        ramp = np.zeros_like(height_grid, dtype=float)
-
-    gen = OpenSimplex(seed=seed)
-    ny, nx = height_grid.shape
-    yi, xi = np.indices((ny, nx))
-    noise = np.vectorize(gen.noise2)(xi / noise_feature_scale, yi / noise_feature_scale)
-    noise = (noise + 1.0) / 2.0
-    return ramp * noise
 
 
 def get_active_simulation_ports(ports_list, bounds):
@@ -77,52 +58,6 @@ def get_active_simulation_ports(ports_list, bounds):
                 "jurisdiction": port.get("jurisdiction", ""),
             })
     return out
-
-
-def load_and_interpolate_grid(file_path, grid_res_km=1.0, bounding_box=None):
-    ds = xr.open_dataset(file_path)
-    height_var = "elevation" if "elevation" in ds else "height"
-    if bounding_box is not None:
-        ds = ds.sel(
-            lon=slice(bounding_box["lon_min"], bounding_box["lon_max"]),
-            lat=slice(bounding_box["lat_min"], bounding_box["lat_max"]),
-        )
-    lon_min, lon_max = float(ds.lon.min()), float(ds.lon.max())
-    lat_min, lat_max = float(ds.lat.min()), float(ds.lat.max())
-
-    lon_scale = np.cos(np.radians((lat_min + lat_max) / 2.0))
-    width_km = (lon_max - lon_min) * KM_PER_DEGREE * lon_scale
-    height_km = (lat_max - lat_min) * KM_PER_DEGREE
-
-    x_km = np.arange(0, width_km, grid_res_km)
-    y_km = np.arange(0, height_km, grid_res_km)
-    lons = lon_min + x_km / (KM_PER_DEGREE * lon_scale)
-    lats = lat_min + y_km / KM_PER_DEGREE
-    lons2d, lats2d = np.meshgrid(lons, lats)
-
-    grid = ds[height_var].interp(
-        lon=xr.DataArray(lons2d, dims=("y", "x")),
-        lat=xr.DataArray(lats2d, dims=("y", "x")),
-        method="linear",
-    ).values
-    return grid, width_km, height_km
-
-
-def load_world():
-    """Loads the height + hotspot grids, using an on-disk cache keyed on the parameters."""
-    key = json.dumps(
-        {"file": FILE_PATH, "res": RESOLUTION, "box": COASTAL_SUBSET, "hot": HOTSPOT_PARAMS},
-        sort_keys=True,
-    )
-    if CACHE_PATH.exists():
-        with np.load(CACHE_PATH) as z:
-            if str(z["key"]) == key:
-                return z["height"], z["hotspots"]
-
-    height, _, _ = load_and_interpolate_grid(FILE_PATH, RESOLUTION, COASTAL_SUBSET)
-    hotspots = generate_dynamic_hotspots(height, **HOTSPOT_PARAMS)
-    np.savez_compressed(CACHE_PATH, key=key, height=height, hotspots=hotspots)
-    return height, hotspots
 
 
 # =========================================================================
@@ -206,13 +141,11 @@ class Camera:
 # =========================================================================
 # DRAWING
 # =========================================================================
-# Boat = square hull + triangle bow, pointing up (+y) at heading 0
 HULL_SQUARE = [(-0.3, 0.2), (0.3, 0.2), (0.3, -0.5), (-0.3, -0.5)]
 BOW_TRIANGLE = [(-0.3, 0.2), (0.3, 0.2), (0.0, 0.6)]
 
 
 def draw_boat(surf, sx, sy, heading, size, fill, outline=(0, 0, 0)):
-    """heading in radians; 0 = north/up, increasing clockwise."""
     c, s = math.cos(heading), math.sin(heading)
 
     def xf(pts):
@@ -224,8 +157,6 @@ def draw_boat(surf, sx, sy, heading, size, fill, outline=(0, 0, 0)):
 
 
 class LabelCache:
-    """Pre-renders text with a translucent dark box so labels are cheap to blit."""
-
     def __init__(self, font, bg_alpha):
         self.font, self.bg_alpha, self.cache = font, bg_alpha, {}
 
@@ -241,8 +172,7 @@ class LabelCache:
 
 
 def draw_map(target, cam, map_surf, res):
-    """Blit only the visible slice of the pre-rendered map, scaled to the current zoom."""
-    Wc, Hc = map_surf.get_size()  # cells; surface row 0 = north edge
+    Wc, Hc = map_surf.get_size()
     left, right = cam.to_world(0, 0)[0], cam.to_world(cam.W, 0)[0]
     top, bottom = cam.to_world(0, 0)[1], cam.to_world(0, cam.H)[1]
 
@@ -259,7 +189,7 @@ def draw_map(target, cam, map_surf, res):
     dw, dh = max(1, round(x1) - dx), max(1, round(y1) - dy)
 
     src = map_surf.subsurface((c0, r0, c1 - c0, r1 - r0))
-    if res * cam.scale < 1.0:  # zoomed out: smooth downsample; zoomed in: crisp cells
+    if res * cam.scale < 1.0:
         scaled = pygame.transform.smoothscale(src, (dw, dh))
     else:
         scaled = pygame.transform.scale(src, (dw, dh))
@@ -300,15 +230,19 @@ def draw_legend(screen, font):
 # =========================================================================
 # MAIN LOOP
 # =========================================================================
-def run(height, hotspots, ports, fishing_boats, patrol_boats, max_frames=None):
+def run(map_data, fishing_boats, patrol_boats, max_frames=None):
     screen = pygame.display.get_surface()
+
+    # Extract clean raw numpy grids directly out of the map data instance
+    height = map_data.height_data
+    hotspots = map_data.biomass_data
 
     base_rgb = colorize_height(height)
     surf_plain = to_surface(base_rgb)
     surf_hot = to_surface(composite_hotspots(base_rgb, hotspots))
 
-    Hc, Wc = height.shape
-    world_w, world_h = Wc * RESOLUTION, Hc * RESOLUTION
+    Hc, Wc = map_data.shape
+    world_w, world_h = map_data.width_km, map_data.height_km
     cam = Camera(world_w, world_h)
     cam.fit(*screen.get_size())
 
@@ -365,7 +299,6 @@ def run(height, hotspots, ports, fishing_boats, patrol_boats, max_frames=None):
         if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
-        # --- map layer: only re-rendered when the camera/size/overlay changes ---
         key = (cam.cx, cam.cy, cam.scale, W, H, show_hot)
         if key != layer_key:
             if layer is None or layer.get_size() != (W, H):
@@ -382,7 +315,7 @@ def run(height, hotspots, ports, fishing_boats, patrol_boats, max_frames=None):
             return -margin <= sx <= W + margin and -margin <= sy <= H + margin
 
         # --- ports ---
-        for p in ports:
+        for p in map_data.ports:
             sx, sy = cam.to_screen(p["grid_x"], p["grid_y"])
             if not visible(sx, sy):
                 continue
@@ -393,7 +326,7 @@ def run(height, hotspots, ports, fishing_boats, patrol_boats, max_frames=None):
                 lbl = port_labels.get(p["name"], (255, 255, 255))
                 screen.blit(lbl, (ix + 9, iy - lbl.get_height() // 2 + 4))
 
-        # --- boats (patrol drawn on top of fishing) ---
+        # --- boats ---
         for fleet, color, mult, default_prefix in (
             (fishing_boats, FISHING_COLOR, 1.0, "F"),
             (patrol_boats, PATROL_COLOR, 1.15, "P"),
@@ -416,9 +349,13 @@ def run(height, hotspots, ports, fishing_boats, patrol_boats, max_frames=None):
         info = f"x {wx:7.1f} km  y {wy:7.1f} km"
         info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
         info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
-        col, row = int(wx // RESOLUTION), int(wy // RESOLUTION)
+        
+        col = int(wx // map_data.km_per_pixel) if map_data.km_per_pixel > 0 else 0
+        row = int(wy // map_data.km_per_pixel) if map_data.km_per_pixel > 0 else 0
+        
         if 0 <= col < Wc and 0 <= row < Hc:
-            info += f"  elev {height[row, col]:7.0f} m  biomass {hotspots[row, col]:.2f}"
+            info += f"  elev {map_data.get_height_at_pixel(col, row):7.0f} m  biomass {map_data.get_biomass_at_pixel(col, row):.2f}"
+            
         hint = "drag: pan | wheel: zoom | H: overlay | L: labels | R: reset"
         bar = pygame.Surface((W, 24), pygame.SRCALPHA)
         bar.fill((0, 0, 0, 170))
@@ -438,11 +375,12 @@ def main():
     pygame.display.set_mode((1280, 900), pygame.RESIZABLE)
     pygame.display.set_caption("MARL Fishing Environment")
 
-    print("Loading map data (cached after first run)...")
-    height, hotspots = load_world()
+    print("Loading data via package MapGenerator...")
+    # Pass PORTS_PATH directly into the generator constructor
+    generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
+    map_data = generator.get_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
 
-    with open(PORTS_PATH, "r", encoding="utf-8") as f:
-        ports = get_active_simulation_ports(json.load(f), COASTAL_SUBSET)
+    ports = map_data.ports
 
     fishing_boats = [
         {"x_km": 45.0, "y_km": 120.0, "heading": np.pi / 4, "name": "ORION"},
@@ -454,7 +392,7 @@ def main():
         {"x_km": 110.0, "y_km": 400.0, "heading": 0.75 * np.pi, "name": "PATROL_B"},
     ]
 
-    run(height, hotspots, ports, fishing_boats, patrol_boats)
+    run(map_data, fishing_boats, patrol_boats)
     pygame.quit()
 
 

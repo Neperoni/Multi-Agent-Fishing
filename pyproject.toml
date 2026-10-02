@@ -7,6 +7,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "dearpygui>=2.3.1",
     "matplotlib>=3.11.2",
     "netcdf4>=1.7.4",
     "numpy>=2.4.6",
@@ -22,3 +23,6 @@ multi-agent-fishing = "multi_agent_fishing:main"
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+package = false
