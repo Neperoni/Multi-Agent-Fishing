@@ -57,7 +57,7 @@
 * **Dimensions:** Zones span roughly 5–20 km across and follow the natural curvature of the coastline.
 * **Depth Profiles (Inferred from Global Fishing Watch data):**
   * Primary depth: 100–150 meters (a few kilometers inland from the continental shelf edge).
-  * Deep-water exceptions: Up to 500 meters (likely corresponding to specific gear/species like crab).
+  * Deep-water exceptions: Around 500 meters, still on the continental shelf. (likely corresponding to specific gear or species).
 
 ### Notable Hotspots
 * **La Perouse Bank:** 35–50 km offshore.
