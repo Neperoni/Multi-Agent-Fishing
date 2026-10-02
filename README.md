@@ -43,8 +43,16 @@ uv pip install -e .
 ```
 *(If your project dependencies aren't tracked inside a `pyproject.toml` or `setup.py` layout yet, you can explicitly run: `uv pip install pygame-ce numpy xarray scipy opensimplex` instead.)*
 
-### 3. Start the Simulation Program
-Run the primary frontend rendering script wrapped through the local virtual environment environment context:
+### 3. VS Code Workspace Integration
+Because **uv** names its environment `.venv`, VS Code will find it automatically. You just need to select it:
+
+1. Open your project folder in VS Code.
+2. Press `Ctrl + Shift + P` (or `Cmd + Shift + P` on Mac) to open the Command Palette.
+3. Type and choose **`Python: Select Interpreter`**.
+4. Select the environment that points to your local **`.venv`** workspace directory.
+
+### 4. Start the Simulation Program
+Run the primary frontend rendering script wrapped through the local virtual environment context:
 
 ```bash
 uv run tools/pygame_load_map.py
