@@ -30,47 +30,50 @@ If you do not have `uv` installed on your machine yet, open your terminal (or Po
 
 *Restart your terminal window after installation finishes to ensure the `uv` command is available in your PATH.*
 
-### 2. Configure the Virtual Environment & Dependencies
-Navigate into your project repository directory and initialize your environment. `uv` will automatically discover your source structure and resolve all required tracking modules:
+### 2. Install the Virtual Environment
+Navigate into your project repository directory. Running `uv sync` will automatically read your `pyproject.toml` and `uv.lock` files, create the `.venv` directory, and install the exact correct package versions:
 
 ```bash
-# 1. Navigate to the project root
+# Navigate to the project root
 cd Multi-Agent-Fishing
 
-# 2. Create a managed virtual environment and install dependencies
-uv venv
-uv pip install -e .
+# Create the .venv and install all locked dependencies automatically
+uv sync
 ```
-*(If your project dependencies aren't tracked inside a `pyproject.toml` or `setup.py` layout yet, you can explicitly run: `uv pip install pygame-ce numpy xarray scipy opensimplex` instead.)*
 
 ### 3. VS Code Workspace Integration
-Because **uv** names its environment `.venv`, VS Code will find it automatically. You just need to select it:
+Because **uv** names its environment `.venv`, VS Code will find it automatically. You just need to activate it:
 
 1. Open your project folder in VS Code.
 2. Press `Ctrl + Shift + P` (or `Cmd + Shift + P` on Mac) to open the Command Palette.
 3. Type and choose **`Python: Select Interpreter`**.
 4. Select the environment that points to your local **`.venv`** workspace directory.
 
-### 4. Start the Simulation Program
-Run the primary frontend rendering script wrapped through the local virtual environment context:
+### 4. Start the Simulation
 
+**Through VS Code:**
+Just run the `pygame_load_map.py` file like usual.
+
+**Through UV in a terminal:**
 ```bash
 uv run tools/pygame_load_map.py
 ```
 
+
+
 ---
 
-## 🎮 Engine Telemetry Controls
+## 🎮 Controls
 
 Once the viewport initializes, you can control map parameters and toggle interactive telemetry displays using your keyboard and mouse:
 
-* **Movement Matrix:** Hold **`W, A, S, D`** (or Arrow Keys) to pan across ocean bounds.
-* **Camera Scaling:** Use your **Mouse Scroll Wheel** to zoom directly into specific targets.
+* **Movement Matrix:** **Left-Click and Drag** or Hold **`W, A, S, D`** (or Arrow Keys) to pan the camera.
+* **Camera Scaling:** Use your **Mouse Scroll Wheel** to zoom the camera.
 * **Biomass Density Overlay:** Press **`H`** to toggle heat-mapped fish concentrations.
-* **Global Text Labels:** Press **`L`** to quickly hide or show map entity labels.
-* **Reset Position:** Press **`R`** to instantly snap the camera frame back to its original view scope.
-* **Pause Simulation:** Press **`Spacebar`** to freeze active vessel physics updates.
-* **Measuring Ruler Tool:** **Right-Click and Drag** your cursor between any two points to instantly compute continuous Euclidean range tracking distance (km) and compass bearing degrees (°).
+* **Global Text Labels:** Press **`L`** to quickly hide or show map labels.
+* **Reset Position:** Press **`R`** to instantly snap the camera frame back to its original view.
+* **Pause Simulation:** Press **`Spacebar`** to pause the simulation.
+* **Measuring Ruler Tool:** **Right-Click and Drag** your cursor between any two points to show distance (km) and compass bearing degrees (°).
 
 
 ## Terrain Data
