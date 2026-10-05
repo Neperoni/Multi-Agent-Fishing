@@ -93,6 +93,15 @@ class Environment:
         self.sim_time_hours += dt
         logs = {"out_of_bounds": [], "groundings": [], "apprehensions": []}
         
+        
+        if(self.poacher_brain is None):
+            print("Poacher brain is not defined, please call set_poacher_brain before running")
+        
+        if(self.patrol_brain is None):
+            print("Patrol brain is not defined, please call set_patrol_brain before running")
+        
+        
+        
         # 1. Process Poachers
         for vessel_id, vessel in self.poachers.items():
             if vessel_id in actions and vessel.is_active:
