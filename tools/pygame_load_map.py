@@ -297,21 +297,26 @@ def run(env, boat_views, map_view, max_frames=None):
         if not is_paused:
 
             actions = {}
-        #generating dummy actions
-            for v in boat_views:
-                vessel_id = v.vessel.id
-                heading = v.vessel.current_heading
+            
+            # 1. Generate Actions for all Poachers
+            for p_id in env.poachers:
+                vessel_state = env.poachers[p_id]
+                actions[p_id] = env.poacher_brain.get_action(
+                    env=env, 
+                    vessel_id=p_id, 
+                    timestep=dt, 
+                    vessel_state=vessel_state
+                )
                 
-                # Check if this vessel is a poacher to supply the fish_toggle parameter
-                if hasattr(v.vessel, 'is_fishing'):
-                    # For a simple test, we can keep its current fishing toggle state,
-                    # or force it to fish (1) if it isn't full yet.
-                    fish_toggle = 1 if v.vessel.cargo < v.vessel.max_cargo else 0
-                    actions[vessel_id] = (heading, 0.5, fish_toggle)
-                else:
-                    # Patrol boats only accept (heading, speed)
-                    actions[vessel_id] = (heading, 0.5)
-
+            # 2. Generate Actions for all Patrol Boats
+            for pat_id in env.patrol_boats:
+                vessel_state = env.patrol_boats[pat_id]
+                actions[pat_id] = env.patrol_brain.get_action(
+                    env=env, 
+                    vessel_id=pat_id, 
+                    timestep=dt, 
+                    vessel_state=vessel_state
+                )
 
         #Main physics call
         # =========================================================================
@@ -463,8 +468,10 @@ def run(env, boat_views, map_view, max_frames=None):
 
 def main():
     pygame.init()
-    pygame.display.set_mode((1280, 900), pygame.RESIZABLE)
+
+    pygame.display.set_mode((900, 900), pygame.RESIZABLE)
     pygame.display.set_caption("MARL Fishing Environment")
+
 
     print("Loading data via package MapGenerator...")
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
@@ -487,6 +494,9 @@ def main():
         env.add_vessel(p)
     for p in sim_patrols:
         env.add_vessel(p)
+
+    env.set_patrol_brain(mf.brains.DummyPatrolBrain)
+    env.set_poacher_brain(mf.brains.DummyPoacherBrain)
 
     boat_views = []
     for p in sim_poachers:
