@@ -9,4 +9,6 @@ class AbstractBrain(ABC):
         Calculate and return the next action tuple for a vessel.
         Must be implemented by subclasses.
         """
+        
+        print("Brain not defined")
         pass
