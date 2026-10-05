@@ -39,6 +39,11 @@ cd Multi-Agent-Fishing
 
 # Create the .venv and install all locked dependencies automatically
 uv sync
+
+
+## If it has issues finding the package you MAY need to run this (The period is necessary)
+uv pip install -e .
+
 ```
 
 ### 3. VS Code Workspace Integration
