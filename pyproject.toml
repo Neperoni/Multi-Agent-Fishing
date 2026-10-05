@@ -1,7 +1,7 @@
 [project]
 name = "multi-agent-fishing"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multi-Agent Fishing Simulation"
 authors = [
     { name = "Neperoni", email = "90918860+Neperoni@users.noreply.github.com" }
 ]
@@ -17,12 +17,9 @@ dependencies = [
     "xarray>=2026.9.0",
 ]
 
-[project.scripts]
-multi-agent-fishing = "multi_agent_fishing:main"
-
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
 build-backend = "uv_build"
 
-[tool.uv]
-package = false
+[tool.uv.build-backend]
+module-name = "multiagent_fishing"

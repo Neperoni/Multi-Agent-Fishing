@@ -19,7 +19,6 @@ import numpy as np
 import pygame
 import pygame.gfxdraw
 
-# Import the decoupled module namespace
 import multiagent_fishing as mf
 
 # =========================================================================
