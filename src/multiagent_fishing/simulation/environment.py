@@ -3,6 +3,7 @@
 import math
 from typing import Dict, Tuple, List
 from .vessels import PoacherVessel, PatrolVessel, SimulationVessel
+from multiagent_fishing.world import Layers
 
 class Environment:
     """
@@ -16,7 +17,7 @@ class Environment:
         
         self._next_id = 1
         self.sim_time_hours = 0.0
-        # FIXED: Bound this to self so remove_vessel can access it safely
+
         self._registered_references = set() 
         
         self.poacher_brain = None
@@ -117,8 +118,8 @@ class Environment:
                 # --- CARGO EXTRACTION MATH ---
                 if vessel.is_active and vessel.is_fishing and vessel.cargo < vessel.max_cargo:
                     # Sample the background biomass scalar (0.0 to 1.0+)
-                    biomass_density = self.map_data.get_biomass_at_pixel(vessel.x, vessel.y, method="bilinear")
-                    
+                    biomass_density = float(self.map_data.sample_point((vessel.x, vessel.y))[Layers.BIOMASS])
+                                        
                     # Extraction rate scales dynamically by background concentration value
                     harvest_rate_per_hour = biomass_density
                     
@@ -142,7 +143,7 @@ class Environment:
             logs["out_of_bounds"].append(vessel.id)
             return
 
-        elevation = self.map_data.get_height_at_pixel(vessel.x, vessel.y, method="closest")
+        elevation = self.map_data.sample_point((vessel.x, vessel.y))[Layers.HEIGHT]
         if elevation > 0.0:
             vessel.is_active = False
             vessel.current_speed = 0.0
@@ -161,8 +162,3 @@ class Environment:
                     poacher.is_active = False
                     poacher.current_speed = 0.0
                     logs["apprehensions"].append({"poacher_id": poacher_id, "by_patrol_id": patrol_id})
-                    
-                    
-def raycast_shore(self, x_km, y_km, dir_x, dir_y, max_dist_km, bounds_as_wall: bool = True) -> RayHit | None:
-    """First land cell along the ray, or None."""
-    return self.raycast(x_km, y_km, dir_x, dir_y, max_dist_km, lambda h: h >= 0, bounds_as_wall)

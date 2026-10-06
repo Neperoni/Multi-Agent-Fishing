@@ -20,6 +20,7 @@ import pygame
 import pygame.gfxdraw
 
 import multiagent_fishing as mf
+from multiagent_fishing import Layers
 
 # =========================================================================
 # CONFIG
@@ -254,7 +255,13 @@ def run(env, boat_views, map_view, max_frames=None):
                 if ev.key == pygame.K_ESCAPE:
                     running = False
                 elif ev.key == pygame.K_h:
-                    map_view.show_biomass = not map_view.show_biomass
+                    map_view.toggle_overlay("biomass")
+                elif ev.key == pygame.K_j:
+                    map_view.toggle_overlay("shore")
+                elif ev.key == pygame.K_k:
+                    map_view.toggle_overlay("port_dist")
+                elif ev.key == pygame.K_f:
+                    map_view.show_flow = not map_view.show_flow
                 elif ev.key == pygame.K_l:
                     show_labels = not show_labels
                 elif ev.key == pygame.K_r:
@@ -360,8 +367,9 @@ def run(env, boat_views, map_view, max_frames=None):
         velocity_text_on = show_labels and (view_width_km <= VELOCITY_LABEL_THRESHOLD_KM)
 
         map_view.draw_background(screen, cam)
+        map_view.draw_flow(screen, cam)
         map_view.draw_ports(screen, cam, ports_text_on, port_labels)
-        
+                
         for view in boat_views:
             # Updated to pass the new boolean tracking triggers
             view.draw(screen, cam, ships_text_on, cargo_text_on, velocity_text_on, boat_labels)
@@ -370,7 +378,6 @@ def run(env, boat_views, map_view, max_frames=None):
 
         draw_legend(screen, font, legend_fish, legend_patrol)
         draw_scale_bar(screen, cam, font)
-
 
         # =========================================================================
         # RENDER MEASURING RULER OVERLAY
@@ -392,7 +399,6 @@ def run(env, boat_views, map_view, max_frames=None):
             # Draw vector guide line nodes
             pygame.draw.line(screen, (0, 255, 255), measure_start_screen, current_mouse_pos, 2)
             
-            # FIXED: Explicitly unpack the tuples into discrete integer x, y arguments
             pygame.gfxdraw.filled_circle(screen, int(measure_start_screen[0]), int(measure_start_screen[1]), 4, (0, 255, 255))
             pygame.gfxdraw.filled_circle(screen, int(current_mouse_pos[0]), int(current_mouse_pos[1]), 4, (0, 255, 255))
             
@@ -430,17 +436,19 @@ def run(env, boat_views, map_view, max_frames=None):
         status_prefix = "PAUSED" if is_paused else "RUNNING"
         info = f"[{status_prefix}] TIME: {sim_days:02d}d::{sim_hours:02d}h::{sim_minutes:02d}m"
         info += f"  |  x {wx:7.1f} km  y {wy:7.1f} km"
-        info += f"  lon {COASTAL_SUBSET['lon_min'] + wx / (KM_PER_DEGREE * lon_scale):8.3f}"
-        info += f"  lat {COASTAL_SUBSET['lat_min'] + wy / KM_PER_DEGREE:7.3f}"
-        
+        lon, lat = map_view.map_data.km_to_lonlat(wx, wy)
+        info += f"  lon {lon:8.3f}  lat {lat:7.3f}"
+
         if map_view.map_data.is_in_bounds(wx, wy):
-            elev = map_view.map_data.get_height_at_pixel(wx, wy, method="bilinear")
-            biomass = map_view.map_data.get_biomass_at_pixel(wx, wy, method="bilinear")
-            info += f"  elev {elev:7.0f} m  biomass {biomass:.2f}"
+            cell = map_view.map_data.sample_point((wx, wy))
+            info += f"  elev {cell[Layers.HEIGHT]:7.0f} m  biomass {cell[Layers.BIOMASS]:.2f}"
         else:
             info += "  elev ------- m  biomass ----"
             
-        hint = "drag: pan | wheel: zoom | H: overlay | L: labels | Space: pause | R-click: measure | R: reset"
+        hint_lines = [
+            "drag: pan | wheel: zoom | R: reset view | Space: pause | R-click: measure",
+            "H: biomass | J: shore dist | K: port dist | F: port flow | L: labels",
+        ]
         
         # 1. Paint the solid bottom dashboard layer bar
         bar = pygame.Surface((W, 24), pygame.SRCALPHA)
@@ -451,14 +459,17 @@ def run(env, boat_views, map_view, max_frames=None):
         screen.blit(font.render(info, True, (230, 230, 230)), (8, H - 21))
         
         # 3. Pre-render instructions text on a separate panel layer stacked 
-        # SAFELY ABOVE the dark taskbar strip to prevent screen overlapping completely
-        h_surf = font.render(hint, True, (160, 170, 180))
-        hint_box = pygame.Surface((h_surf.get_width() + 10, h_surf.get_height() + 4), pygame.SRCALPHA)
-        hint_box.fill((10, 12, 18, 190)) 
-        hint_box.blit(h_surf, (5, 2))
-        
-        # Blitted directly above the 24px bottom bar line height margin
-        screen.blit(hint_box, (W - hint_box.get_width() - 8, H - 24 - hint_box.get_height() - 4))
+        h_surfs = [font.render(line, True, (160, 170, 180)) for line in hint_lines]
+        line_h = h_surfs[0].get_height()
+        box_w = max(s.get_width() for s in h_surfs) + 10
+        box_h = line_h * len(h_surfs) + 4 + 2 * (len(h_surfs) - 1)
+
+        hint_box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        hint_box.fill((10, 12, 18, 190))
+        for i, s in enumerate(h_surfs):
+            hint_box.blit(s, (5, 2 + i * (line_h + 2)))  # left-aligned
+
+        screen.blit(hint_box, (8, H - 24 - box_h - 4))
 
         pygame.display.flip()
         frame += 1

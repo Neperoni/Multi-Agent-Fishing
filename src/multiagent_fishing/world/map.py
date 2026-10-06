@@ -10,7 +10,7 @@ import numpy as np
 KM_PER_DEGREE = 111.32
 SEA_LEVEL = 0.0  # height map is depth/height, so land is height >= 0
 
-class Channel(IntEnum):
+class Layers(IntEnum):
     """Layout of Map.layers, shape (rows, cols, len(Channel)), float32. Used as array indices."""
     HEIGHT = 0              # meters, >= 0 is land
     BIOMASS = 1             # density in [0, 1]
@@ -62,12 +62,12 @@ def _to_ego(dx, dy, heading):
 def _rotate_dir_channels(arr: np.ndarray, heading: np.ndarray) -> None:
     """In place: rewrite the port direction channels of an (M, C) array into the boat frame."""
     fwd, right = _to_ego(
-        arr[:, Channel.NEAREST_PORT_DIR_X].astype(np.float64),
-        arr[:, Channel.NEAREST_PORT_DIR_Y].astype(np.float64),
+        arr[:, Layers.NEAREST_PORT_DIR_X].astype(np.float64),
+        arr[:, Layers.NEAREST_PORT_DIR_Y].astype(np.float64),
         heading,
     )
-    arr[:, Channel.NEAREST_PORT_DIR_X] = fwd
-    arr[:, Channel.NEAREST_PORT_DIR_Y] = right
+    arr[:, Layers.NEAREST_PORT_DIR_X] = fwd
+    arr[:, Layers.NEAREST_PORT_DIR_Y] = right
 
 
 @dataclass(eq=False)
@@ -95,16 +95,16 @@ class Map:
     _oob_row: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self):
-        if self.layers.ndim != 3 or self.layers.shape[-1] != len(Channel):
-            raise ValueError(f"layers must have shape (rows, cols, {len(Channel)})")
+        if self.layers.ndim != 3 or self.layers.shape[-1] != len(Layers):
+            raise ValueError(f"layers must have shape (rows, cols, {len(Layers)})")
         self.layers.setflags(write=False)
         self.rows, self.cols = self.layers.shape[:2]
-        self.land_mask = self.layers[..., Channel.HEIGHT] >= SEA_LEVEL
+        self.land_mask = self.layers[..., Layers.HEIGHT] >= SEA_LEVEL
 
-        oob = np.zeros(len(Channel), dtype=np.float32)
-        oob[Channel.HEIGHT] = OOB_HEIGHT
-        oob[Channel.NEAREST_PORT_ID] = -1.0
-        oob[Channel.NEAREST_PORT_DIST] = self.unreachable_km
+        oob = np.zeros(len(Layers), dtype=np.float32)
+        oob[Layers.HEIGHT] = OOB_HEIGHT
+        oob[Layers.NEAREST_PORT_ID] = -1.0
+        oob[Layers.NEAREST_PORT_DIST] = self.unreachable_km
         self._oob_row = oob
 
     @property
@@ -201,9 +201,9 @@ class Map:
             if frame_headings is not None:
                 fh = np.broadcast_to(np.asarray(frame_headings, dtype=np.float64), (n,))
                 _rotate_dir_channels(samples, np.repeat(fh, n_samples))
-            samples = samples.reshape(n, n_samples, len(Channel))
+            samples = samples.reshape(n, n_samples, len(Layers))
         else:
-            samples = np.zeros((n, 0, len(Channel)), dtype=np.float32)
+            samples = np.zeros((n, 0, len(Layers)), dtype=np.float32)
 
         if single:
             return RayResult(RayHit(*(f[0].item() for f in ray)), samples[0])
@@ -236,7 +236,7 @@ class Map:
             frame_headings=np.repeat(h, n_rays),
         )
         hit = RayHit(*(f.reshape(n, n_rays) for f in r.hit))
-        samples = r.samples.reshape(n, n_rays, n_samples, len(Channel))
+        samples = r.samples.reshape(n, n_rays, n_samples, len(Layers))
         if single:
             return RayResult(RayHit(*(f[0] for f in hit)), samples[0])
         return RayResult(hit, samples)
@@ -272,7 +272,7 @@ class Map:
 
     def nearest_port(self, positions, heading=None) -> np.ndarray:
         """[port_id, path_distance_km, dir_x, dir_y] for the nearest port by water path."""
-        return self.sample_point(positions, heading)[..., Channel.NEAREST_PORT_ID:]
+        return self.sample_point(positions, heading)[..., Layers.NEAREST_PORT_ID:]
 
     # ------------------------------------------------------------------
     # Serialization

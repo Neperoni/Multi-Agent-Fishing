@@ -3,12 +3,13 @@ import math
 from pathlib import Path
 
 import numpy as np
+import skfmm
 import xarray as xr
 from opensimplex import OpenSimplex
 from scipy.ndimage import distance_transform_edt
-from skimage.graph import MCP_Geometric
 
-from .map import KM_PER_DEGREE, SEA_LEVEL, Channel, Map
+
+from .map import KM_PER_DEGREE, SEA_LEVEL, Layers, Map
 
 # Fish live in this depth band (meters, negative = below sea level)
 BIOMASS_DEPTH_MIN = -220.0
@@ -16,7 +17,6 @@ BIOMASS_DEPTH_MAX = -80.0
 
 # Cells with no source data (NaN) are treated as shallow water
 NAN_HEIGHT_FILL = -1.0
-
 
 class MapGenerator:
     """Builds a finished Map from a NetCDF height file and an optional ports JSON."""
@@ -34,7 +34,9 @@ class MapGenerator:
         biomass_seed: int = 42,
         port_ocean_radius_km: float = 4.0,         # Circular ocean channel radius at each port
         port_ocean_depth_m: float = -50.0,         # Depth of the harbor basin
-        port_biomass_clear_radius_km: float = 7.0  # Zero-biomass radius around harbors
+        port_biomass_clear_radius_km: float = 7.0,  # Zero-biomass radius around harbors
+        shore_penalty_km: float = 1.0,
+        shore_penalty_strength: float = 2.0
     ) -> Map:
         height, width_km, height_km, lon_min, lat_min, lon_scale = self._load_heightmap(
             resolution_km, bounding_box
@@ -53,19 +55,22 @@ class MapGenerator:
         cap_km = math.hypot(width_km, height_km)  # stands in for "no path" / "no land"
 
         shore_dist = self._shore_distance(land_mask, resolution_km, cap_km)
-        port_dist, port_flow = self._port_fields(land_mask, ports, resolution_km, cap_km)
+        port_dist, port_flow = self._port_fields(
+            land_mask, shore_dist, ports, resolution_km, cap_km,
+            shore_penalty_km, shore_penalty_strength,
+        )
         nearest_id, nearest_dist, nearest_dir = self._nearest_port_layers(port_dist, port_flow, cap_km)
 
         by_channel = {
-            Channel.HEIGHT: height,
-            Channel.BIOMASS: biomass,
-            Channel.SHORE_DIST: shore_dist,
-            Channel.NEAREST_PORT_ID: nearest_id,
-            Channel.NEAREST_PORT_DIST: nearest_dist,
-            Channel.NEAREST_PORT_DIR_X: nearest_dir[0],
-            Channel.NEAREST_PORT_DIR_Y: nearest_dir[1],
+            Layers.HEIGHT: height,
+            Layers.BIOMASS: biomass,
+            Layers.SHORE_DIST: shore_dist,
+            Layers.NEAREST_PORT_ID: nearest_id,
+            Layers.NEAREST_PORT_DIST: nearest_dist,
+            Layers.NEAREST_PORT_DIR_X: nearest_dir[0],
+            Layers.NEAREST_PORT_DIR_Y: nearest_dir[1],
         }
-        layers = np.stack([by_channel[c] for c in Channel], axis=-1).astype(np.float32)
+        layers = np.stack([by_channel[c] for c in Layers], axis=-1).astype(np.float32)
 
         return Map(
             layers=layers,
@@ -195,50 +200,82 @@ class MapGenerator:
         if not land_mask.any():
             return np.full(land_mask.shape, cap_km)
         return np.minimum(distance_transform_edt(~land_mask) * resolution_km, cap_km)
-
-    def _port_fields(self, land_mask: np.ndarray, ports: list[dict], resolution_km: float, cap_km: float):
+    
+    def _port_fields(
+        self,
+        land_mask: np.ndarray,
+        shore_dist: np.ndarray,
+        ports: list[dict],
+        resolution_km: float,
+        cap_km: float,
+        shore_penalty_km: float,
+        shore_penalty_strength: float,
+    ):
         """
-        One Dijkstra per port over water cells.
+        Two Fast Marching solves per port over water cells (any-angle):
+          - unweighted -> port_dist, true path length in km
+          - shore-averse weighted -> port_flow only
         Returns port_dist (n, rows, cols) float32 in km, capped at cap_km where unreachable,
-        and port_flow (n, 2, rows, cols) float16 unit vectors toward the port (0 where unreachable).
+        and port_flow (n, 2, rows, cols) float16 unit vectors toward the port.
         """
         rows, cols = land_mask.shape
         dist = np.full((len(ports), rows, cols), cap_km, dtype=np.float32)
         flow = np.zeros((len(ports), 2, rows, cols), dtype=np.float16)
 
+        # Cost is 1 in open water and rises to 1 + strength next to land,
+        # fading back to 1 after `shore_penalty_km` further out.
+        width = max(shore_penalty_km, resolution_km)
+        falloff = np.clip(1.0 - (shore_dist - resolution_km) / width, 0.0, 1.0)
+        speed_base = 1.0 / (1.0 + shore_penalty_strength * falloff)
+
         for i, port in enumerate(ports):
             col = min(max(int(port["grid_x"] / resolution_km), 0), cols - 1)
             row = min(max(int(port["grid_y"] / resolution_km), 0), rows - 1)
 
-            cost = np.where(land_mask, np.inf, 1.0)
-            cost[row, col] = 1.0  # guarantee the start cell is traversable
-            cum, _ = MCP_Geometric(cost, fully_connected=True).find_costs([(row, col)])
-            cum = cum * resolution_km
+            blocked = land_mask.copy()
+            blocked[row, col] = False  # guarantee the start cell is traversable
 
-            reachable = np.isfinite(cum)
-            dist[i] = np.where(reachable, np.minimum(cum, cap_km), cap_km)
-            flow[i] = (self._steepest_descent(cum) * reachable).astype(np.float16)
+            def make_phi():
+                phi = np.ma.MaskedArray(np.ones((rows, cols)), mask=blocked)
+                phi[row, col] = 0.0
+                return phi
+
+            # Pure geometric distance: what gets stored as port_dist.
+            true_km = np.ma.filled(skfmm.distance(make_phi(), dx=resolution_km), np.inf)
+
+            # Weighted travel time: only used to shape the flow direction.
+            speed = np.ma.MaskedArray(speed_base, mask=blocked)
+            weighted = np.ma.filled(
+                skfmm.travel_time(make_phi(), speed, dx=resolution_km), np.inf
+            )
+
+            reachable = np.isfinite(true_km)
+            dist[i] = np.where(reachable, np.minimum(true_km, cap_km), cap_km)
+            flow[i] = self._flow_from_distance(weighted, reachable, resolution_km).astype(np.float16)
 
         return dist, flow
 
     @staticmethod
-    def _steepest_descent(cum: np.ndarray) -> np.ndarray:
-        """Unit vector toward each cell's lowest-cost neighbor. Shape (2, rows, cols)."""
-        ny, nx = cum.shape
-        pad = np.pad(cum, 1, constant_values=np.inf)
-        best = cum.copy()
-        fx = np.zeros_like(cum)
-        fy = np.zeros_like(cum)
-        for oy in (-1, 0, 1):
-            for ox in (-1, 0, 1):
-                if ox == 0 and oy == 0:
-                    continue
-                nb = pad[1 + oy:1 + oy + ny, 1 + ox:1 + ox + nx]
-                better = nb < best
-                n = math.hypot(ox, oy)
-                best = np.where(better, nb, best)
-                fx = np.where(better, ox / n, fx)
-                fy = np.where(better, oy / n, fy)
+    def _flow_from_distance(cum: np.ndarray, reachable: np.ndarray, resolution_km: float) -> np.ndarray:
+        """
+        Unit vector toward the port at any angle: the negative gradient of the distance field.
+        Shape (2, rows, cols), (x, y) order, zero where unreachable.
+        """
+        if not reachable.any():
+            return np.zeros((2, *cum.shape))
+
+        # Replace land/unreachable cells with the value of the nearest reachable cell so the
+        # gradient near coastlines is not distorted by infinities or artificial cliffs.
+        idx = distance_transform_edt(~reachable, return_distances=False, return_indices=True)
+        filled = cum[tuple(idx)]
+
+        gy, gx = np.gradient(filled, resolution_km)  # axis 0 = y (rows), axis 1 = x (cols)
+        fx, fy = -gx, -gy
+
+        norm = np.hypot(fx, fy)
+        ok = reachable & (norm > 1e-9)
+        fx = np.where(ok, fx / np.where(ok, norm, 1.0), 0.0)
+        fy = np.where(ok, fy / np.where(ok, norm, 1.0), 0.0)
         return np.stack([fx, fy])
 
     @staticmethod

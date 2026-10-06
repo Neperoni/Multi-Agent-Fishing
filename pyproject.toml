@@ -13,6 +13,8 @@ dependencies = [
     "numpy>=2.4.6",
     "opensimplex>=0.4.5.1",
     "pygame-ce>=2.5.8",
+    "scikit-fmm>=2025.6.23",
+    "scikit-image>=0.26.0",
     "scipy>=1.17.1",
     "xarray>=2026.9.0",
 ]
