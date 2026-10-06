@@ -161,3 +161,8 @@ class Environment:
                     poacher.is_active = False
                     poacher.current_speed = 0.0
                     logs["apprehensions"].append({"poacher_id": poacher_id, "by_patrol_id": patrol_id})
+                    
+                    
+def raycast_shore(self, x_km, y_km, dir_x, dir_y, max_dist_km, bounds_as_wall: bool = True) -> RayHit | None:
+    """First land cell along the ray, or None."""
+    return self.raycast(x_km, y_km, dir_x, dir_y, max_dist_km, lambda h: h >= 0, bounds_as_wall)
