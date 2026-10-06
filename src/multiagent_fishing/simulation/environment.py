@@ -1,9 +1,10 @@
-# multiagent_fishing/simulation/Environment.py
+# multiagent_fishing/simulation/environment.py
 
 import math
 from typing import Dict, Tuple, List
 from .vessels import PoacherVessel, PatrolVessel, SimulationVessel
 from multiagent_fishing.world import Layers
+from .observation import Observation
 
 class Environment:
     """
@@ -162,3 +163,31 @@ class Environment:
                     poacher.is_active = False
                     poacher.current_speed = 0.0
                     logs["apprehensions"].append({"poacher_id": poacher_id, "by_patrol_id": patrol_id})
+
+    def get_observation(self, vessel_id: int, dt: float, params: dict = None) -> Observation:
+        """Builds the decision-time Observation for a single vessel."""
+        vessel = self.poachers.get(vessel_id) or self.patrol_boats.get(vessel_id)
+        if vessel is None:
+            raise KeyError(f"No vessel registered with id {vessel_id}")
+        return Observation(
+            vessel_id=vessel_id,
+            vessel_state=vessel,
+            timestep=dt,
+            role=vessel.role,
+            env=self,
+            params=params or {},
+        )
+
+    def get_actions(self, dt: float) -> dict:
+        """Asks each role's brain for an action for every active vessel."""
+        if self.poacher_brain is None or self.patrol_brain is None:
+            raise RuntimeError("Set both brains with set_poacher_brain / set_patrol_brain first")
+
+        actions = {}
+        for vid, vessel in self.poachers.items():
+            if vessel.is_active:
+                actions[vid] = self.poacher_brain.get_action(self.get_observation(vid, dt))
+        for vid, vessel in self.patrol_boats.items():
+            if vessel.is_active:
+                actions[vid] = self.patrol_brain.get_action(self.get_observation(vid, dt))
+        return actions

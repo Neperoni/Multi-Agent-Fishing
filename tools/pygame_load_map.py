@@ -22,6 +22,7 @@ import pygame.gfxdraw
 import multiagent_fishing as mf
 from multiagent_fishing import Layers
 
+
 # =========================================================================
 # CONFIG
 # =========================================================================
@@ -109,7 +110,8 @@ def spawn_random_vessel(env, boat_views_list, is_poacher, names_json_path="datas
                 "patrol_boats": {"first_word": ["VIGILANT"], "last_word": ["GUARDIAN"]}
             }
 
-    port = random.choice(env.map_data.ports)
+    port_id = random.randrange(len(env.map_data.ports))
+    port = env.map_data.ports[port_id]
     pool_key = "fishing_boats" if is_poacher else "patrol_boats"
     pool = _FRONTEND_NAME_POOL.get(pool_key, {})
     
@@ -120,9 +122,10 @@ def spawn_random_vessel(env, boat_views_list, is_poacher, names_json_path="datas
     # Instantiate the vessel WITHOUT an ID (None)
     if is_poacher:
         new_vessel = mf.simulation.PoacherVessel(
-            name=vessel_name, 
-            start_x=port["grid_x"], 
+            name=vessel_name,
+            start_x=port["grid_x"],
             start_y=port["grid_y"],
+            home_port_id=port_id,
             start_heading=random.uniform(0.0, 2 * math.pi)
         )
         # Environment assigns the ID right here and returns it
@@ -220,11 +223,11 @@ def run(env, boat_views, map_view, max_frames=None):
     port_labels = LabelCache(label_font, 90)
     boat_labels = LabelCache(label_font, 130)
 
-    dummy_fish_vessel = mf.simulation.PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0, start_heading=0.0)
-    dummy_patrol_vessel = mf.simulation.PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
+    legend_fish_vessel = mf.simulation.PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0, home_port_id=0, start_heading=0.0)
+    legend_patrol_vessel = mf.simulation.PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
 
-    legend_fish = mf.rendering.BoatView(dummy_fish_vessel, FISHING_COLOR, boat_size_px=12.0)
-    legend_patrol = mf.rendering.BoatView(dummy_patrol_vessel, PATROL_COLOR, boat_size_px=12.0)
+    legend_fish = mf.rendering.BoatView(legend_fish_vessel, FISHING_COLOR, boat_size_px=12.0)
+    legend_patrol = mf.rendering.BoatView(legend_patrol_vessel, PATROL_COLOR, boat_size_px=12.0)
 
     center_lat = (COASTAL_SUBSET["lat_min"] + COASTAL_SUBSET["lat_max"]) / 2
     lon_scale = np.cos(np.radians(center_lat))
@@ -303,30 +306,10 @@ def run(env, boat_views, map_view, max_frames=None):
         # =========================================================================
         if not is_paused:
 
-            actions = {}
-            
-            # 1. Generate Actions for all Poachers
-            for p_id in env.poachers:
-                vessel_state = env.poachers[p_id]
-                actions[p_id] = env.poacher_brain.get_action(
-                    env=env, 
-                    vessel_id=p_id, 
-                    timestep=dt, 
-                    vessel_state=vessel_state
-                )
-                
-            # 2. Generate Actions for all Patrol Boats
-            for pat_id in env.patrol_boats:
-                vessel_state = env.patrol_boats[pat_id]
-                actions[pat_id] = env.patrol_brain.get_action(
-                    env=env, 
-                    vessel_id=pat_id, 
-                    timestep=dt, 
-                    vessel_state=vessel_state
-                )
+            actions = env.get_actions(dt)
 
-        #Main physics call
-        # =========================================================================
+            #Main physics call
+            # =========================================================================
             step_events = env.step(actions, dt=dt)
             
             for app in step_events.get("apprehensions", []):
@@ -492,9 +475,9 @@ def main():
     env = mf.simulation.Environment(map_data)
 
     sim_poachers = [
-        mf.simulation.PoacherVessel(name="ORION", start_x=45.0, start_y=120.0, start_heading=np.pi / 4),
-        mf.simulation.PoacherVessel(name="MARINER", start_x=90.0, start_y=340.0, start_heading=np.pi),
-        mf.simulation.PoacherVessel(name="SEAWOLF", start_x=150.0, start_y=510.0, start_heading=1.5 * np.pi)
+        mf.simulation.PoacherVessel(name="ORION", start_x=45.0, start_y=120.0, home_port_id=0, start_heading=np.pi / 4),
+        mf.simulation.PoacherVessel(name="MARINER", start_x=90.0, start_y=340.0, home_port_id=1, start_heading=np.pi),
+        mf.simulation.PoacherVessel(name="SEAWOLF", start_x=150.0, start_y=510.0, home_port_id=2, start_heading=1.5 * np.pi)
     ]
     sim_patrols = [
         mf.simulation.PatrolVessel(name="PATROL_A", start_x=60.0, start_y=150.0, start_heading=0.0),
@@ -506,8 +489,8 @@ def main():
     for p in sim_patrols:
         env.add_vessel(p)
 
-    env.set_patrol_brain(mf.brains.DummyPatrolBrain)
-    env.set_poacher_brain(mf.brains.DummyPoacherBrain)
+    env.set_poacher_brain(mf.brains.BasicPoacherBrain())
+    env.set_patrol_brain(mf.brains.DummyPatrolBrain())
 
     boat_views = []
     for p in sim_poachers:
