@@ -1,215 +1,236 @@
 """
-MARL fishing map playback viewer (pygame)
-
-Controls
-    left/middle drag ... pan
-    mouse wheel ........ zoom (about the cursor)
-    arrows / WASD ...... pan        + / - ... zoom
-    H .................. toggle biomass overlay
-    L .................. toggle labels
-    R .................. reset view
-    Space .............. pause/resume playback
-    Left / Right Arrow . scrub frames manually when paused
-    Right-click drag ... measure distance and bearing
-    Esc ................ quit
+MARL fishing replay viewer (pygame)
+Plays back a pre-simulated game from a GameStore file.
 """
-import math
+import bisect
+
 import numpy as np
 import pygame
-import pygame.gfxdraw
-
 import multiagent_fishing as mf
-from multiagent_fishing import Layers
-from pathlib import Path
 
-from multiagent_fishing.jax_sim.batch_rollout import BatchRollout
-
-
+from multiagent_fishing.rendering import MapViewerRenderer, Camera
+from multiagent_fishing.jax_sim.game_store import GameStore
 
 # =========================================================================
 # CONFIG
 # =========================================================================
+STORE_PATH = "datasets/jax_runs/generation_001.npz"
+GAME_METRIC = "fish"
+GAME_HOW = "median"
+
 FILE_PATH = "datasets/gebco_2026_n55.0_s35.0_w-135.0_e-118.0.nc"
 PORTS_PATH = "datasets/ports.json"
-
-# Automatically resolve the path to the jax_runs directory relative to this viewer file
-CURRENT_DIR = Path(__file__).resolve().parent
-ROLLOUT_FILE = str(CURRENT_DIR / "../datasets/jax_runs/generation_001.npz")
-
-
-RESOLUTION = 1.0  # km per grid cell
-COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_max": 50.0}
-BIOMASS_SEED = 42
-RESOLUTION = 1.0  # km per grid cell
+RESOLUTION = 1.0
 COASTAL_SUBSET = {"lon_min": -126.0, "lon_max": -122.0, "lat_min": 42.0, "lat_max": 50.0}
 BIOMASS_SEED = 42
 
-MAX_SCALE = 60.0  # max zoom, in screen pixels per km
-
-BG_COLOR = (8, 10, 16)
 FISHING_COLOR = (255, 204, 0)
 PATROL_COLOR = (0, 255, 102)
-PORT_COLOR = (255, 0, 127)
 
-SHIP_LABEL_THRESHOLD_KM = 4000.0
-PORT_LABEL_THRESHOLD_KM = 700.0   
-CARGO_LABEL_THRESHOLD_KM = 350.0  
-VELOCITY_LABEL_THRESHOLD_KM = 150.0 
+BASE_FPS = 10.0                      # game frames per real second at 1x
+SPEEDS = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+DEFAULT_SPEED_IDX = 3                # 1x
+MAX_MESSAGES = 20
 
-class Camera:
-    def __init__(self, world_w, world_h):
-        self.world_w, self.world_h = world_w, world_h
-        self.cx = world_w / 2
-        self.cy = world_h / 2
-        self.scale = 1.0  
-        self.min_scale = 0.1
-        self.W = self.H = 1
-
-    def fit(self, W, H):
-        self.W, self.H = W, H
-        self.scale = 0.95 * min(W / self.world_w, H / self.world_h)
-        self.min_scale = self.scale * 0.5
-        self.cx, self.cy = self.world_w / 2, self.world_h / 2
-
-    def to_screen(self, x, y):
-        return (x - self.cx) * self.scale + self.W / 2, self.H / 2 - (y - self.cy) * self.scale
-
-    def to_world(self, sx, sy):
-        return (sx - self.W / 2) / self.scale + self.cx, self.cy - (sy - self.H / 2) / self.scale
-
-    def _clamp(self):
-        self.cx = min(max(self.cx, 0.0), self.world_w)
-        self.cy = min(max(self.cy, 0.0), self.world_h)
-
-    def pan_pixels(self, dx, dy):
-        self.cx -= dx / self.scale
-        self.cy += dy / self.scale
-        self._clamp()
-
-    def zoom_at(self, sx, sy, factor):
-        wx, wy = self.to_world(sx, sy)
-        self.scale = min(max(self.scale * factor, self.min_scale), MAX_SCALE)
-        self.cx = wx - (sx - self.W / 2) / self.scale
-        self.cy = wy + (sy - self.H / 2) / self.scale
-        self._clamp()
-
-
-class LabelCache:
-    def __init__(self, font, bg_alpha):
-        self.font, self.bg_alpha, self.cache = font, bg_alpha, {}
-
-    def get(self, text, color):
-        key = (text, color)
-        if key not in self.cache:
-            txt = self.font.render(text, True, color)
-            surf = pygame.Surface((txt.get_width() + 6, txt.get_height() + 2), pygame.SRCALPHA)
-            surf.fill((5, 5, 5, self.bg_alpha))
-            surf.blit(txt, (3, 1))
-            self.cache[key] = surf
-        return self.cache[key]
-
-
-def draw_scale_bar(screen, cam, font):
-    km = 140 / cam.scale
-    mag = 10 ** math.floor(math.log10(km))
-    nice = max(m * mag for m in (1, 2, 5) if m * mag <= km)
-    length = nice * cam.scale
-    x1, y = cam.W - 20, cam.H - 40
-    x0 = x1 - length
-    pygame.draw.line(screen, (255, 255, 255), (x0, y), (x1, y), 2)
-    pygame.draw.line(screen, (255, 255, 255), (x0, y - 5), (x0, y + 5), 2)
-    pygame.draw.line(screen, (255, 255, 255), (x1, y - 5), (x1, y + 5), 2)
-    lbl = font.render(f"{nice:g} km", True, (255, 255, 255))
-    screen.blit(lbl, (x1 - length / 2 - lbl.get_width() / 2, y - 22))
-
-
-def draw_legend(screen, font, legend_fish, legend_patrol):
-    rows = [("Fishing Boat", "fish"), ("Patrol Boat", "patrol"), ("Port", "port")]
-    panel = pygame.Surface((150, 12 + 24 * len(rows)), pygame.SRCALPHA)
-    panel.fill((17, 17, 17, 210))
-    screen.blit(panel, (10, 10))
-    
-    class UI_Camera:
-        W = H = 9999
-        def to_screen(self, x, y): return x, y
-    ui_cam = UI_Camera()
-
-    for i, (name, kind) in enumerate(rows):
-        cy = 10 + 18 + 24 * i
-        if kind == "fish":
-            legend_fish.vessel.x, legend_fish.vessel.y = 28, cy
-            legend_fish.draw(screen, ui_cam, labels_on=False, cargo_on=False, velocity_on=False, label_cache=None)
-        elif kind == "patrol":
-            legend_patrol.vessel.x, legend_patrol.vessel.y = 28, cy
-            legend_patrol.draw(screen, ui_cam, labels_on=False, cargo_on=False, velocity_on=False, label_cache=None)
-        else:
-            pygame.gfxdraw.filled_circle(screen, 28, cy, 5, PORT_COLOR)
-            pygame.gfxdraw.aacircle(screen, 28, cy, 5, (255, 255, 255))
-            
-        screen.blit(font.render(name, True, (230, 230, 230)), (48, cy - 8))
+BAR_HEIGHT = 10
+BAR_BOTTOM_MARGIN = 40
 
 
 # =========================================================================
-# PLAYBACK MAIN LOOP
+# REPLAY DATA
 # =========================================================================
-def run(env, poacher_views, patrol_views, map_view, playback_data):
+class ReplayLog:
+    """Holds one game's frame arrays plus derived event messages."""
+
+    def __init__(self, store_path, metric, how):
+        store = GameStore.load(store_path)
+        (g,) = store.select(metric=metric, how=how)
+        data = store.game_data(g)
+
+        self.game_id = g
+        self.frames = {k: np.asarray(v) for k, v in data["frames"].items()}
+        self.n_steps = self.frames["poachers.x"].shape[0]
+        self.n_poachers = self.frames["poachers.x"].shape[1]
+        self.n_patrols = self.frames["patrols.x"].shape[1]
+        self.t = self.frames.get("t")
+
+        # The log has no names, so generate simple ones
+        self.poacher_names = [f"POACHER {k + 1}" for k in range(self.n_poachers)]
+        self.patrol_names = [f"PATROL {k + 1}" for k in range(self.n_patrols)]
+
+        self.events = self._build_events()
+        self.event_frames = [f for f, _ in self.events]
+
+    def time_at(self, i):
+        return float(self.t[i]) if self.t is not None else float(i)
+
+    def _build_events(self):
+        """Derive messages from state transitions so no event data is needed."""
+        events = []
+
+        caught = self.frames["poachers.caught"].astype(bool)
+        for t, k in np.argwhere(caught[1:] & ~caught[:-1]):
+            events.append((int(t) + 1, f"ALERT: {self.poacher_names[k]} captured!"))
+
+        for prefix, names in (("poachers", self.poacher_names), ("patrols", self.patrol_names)):
+            active = self.frames[f"{prefix}.active"].astype(bool)
+            for t, k in np.argwhere(active[:-1] & ~active[1:]):
+                events.append((int(t) + 1, f"{names[k]} went inactive (aground or out of bounds)"))
+
+        events.sort(key=lambda e: e[0])
+        return events
+
+    def messages_at(self, i):
+        """Last MAX_MESSAGES events that have happened by frame i."""
+        j = bisect.bisect_right(self.event_frames, i)
+        return [text for _, text in self.events[max(0, j - MAX_MESSAGES):j]]
+
+
+# =========================================================================
+# VESSELS
+# =========================================================================
+def build_vessels(log):
+    f = log.frames
+    poachers, patrols = [], []
+
+    for k in range(log.n_poachers):
+        poachers.append(mf.simulation.PoacherVessel(
+            name=log.poacher_names[k],
+            start_x=float(f["poachers.x"][0, k]),
+            start_y=float(f["poachers.y"][0, k]),
+            home_port_id=None,
+            start_heading=float(f["poachers.heading"][0, k]),
+        ))
+
+    for k in range(log.n_patrols):
+        patrols.append(mf.simulation.PatrolVessel(
+            name=log.patrol_names[k],
+            start_x=float(f["patrols.x"][0, k]),
+            start_y=float(f["patrols.y"][0, k]),
+            start_heading=float(f["patrols.heading"][0, k]),
+        ))
+
+    boat_views = (
+        [mf.rendering.BoatView(v, FISHING_COLOR, boat_size_px=12.0) for v in poachers]
+        + [mf.rendering.BoatView(v, PATROL_COLOR, boat_size_px=12.0) for v in patrols]
+    )
+    return poachers, patrols, boat_views
+
+
+def apply_frame(log, poachers, patrols, i):
+    """Copy the recorded state for frame i onto the vessel objects."""
+    f = log.frames
+
+    for k, v in enumerate(poachers):
+        v.x = float(f["poachers.x"][i, k])
+        v.y = float(f["poachers.y"][i, k])
+        v.current_heading = float(f["poachers.heading"][i, k])
+        v.current_speed = float(f["poachers.speed"][i, k])
+        v.is_active = bool(f["poachers.active"][i, k])
+        v.cargo = float(f["poachers.cargo"][i, k])
+        v.is_caught = bool(f["poachers.caught"][i, k])
+        v.is_fishing = bool(f["poachers.fishing"][i, k])
+
+    for k, v in enumerate(patrols):
+        v.x = float(f["patrols.x"][i, k])
+        v.y = float(f["patrols.y"][i, k])
+        v.current_heading = float(f["patrols.heading"][i, k])
+        v.current_speed = float(f["patrols.speed"][i, k])
+        v.is_active = bool(f["patrols.active"][i, k])
+
+
+# =========================================================================
+# PLAYBACK CONTROL
+# =========================================================================
+class Playback:
+    def __init__(self, n_steps):
+        self.n = n_steps
+        self.pos = 0.0
+        self.playing = True
+        self.speed_idx = DEFAULT_SPEED_IDX
+
+    @property
+    def index(self):
+        return min(int(self.pos), self.n - 1)
+
+    @property
+    def speed(self):
+        return SPEEDS[self.speed_idx]
+
+    def update(self, dt):
+        if not self.playing:
+            return
+        self.pos += dt * BASE_FPS * self.speed
+        if self.pos >= self.n - 1:
+            self.pos = float(self.n - 1)
+            self.playing = False
+
+    def seek(self, idx):
+        self.pos = float(np.clip(idx, 0, self.n - 1))
+
+    def toggle(self):
+        if not self.playing and self.index >= self.n - 1:
+            self.pos = 0.0
+        self.playing = not self.playing
+
+    def change_speed(self, delta):
+        self.speed_idx = int(np.clip(self.speed_idx + delta, 0, len(SPEEDS) - 1))
+
+
+def timeline_rect(W, H):
+    return pygame.Rect(14, H - BAR_BOTTOM_MARGIN, W - 28, BAR_HEIGHT)
+
+
+def draw_timeline(screen, bar, pb, font, log):
+    pygame.draw.rect(screen, (60, 60, 60), bar)
+    frac = pb.index / max(1, pb.n - 1)
+    pygame.draw.rect(screen, (200, 200, 200), (bar.left, bar.top, int(bar.width * frac), bar.height))
+    handle_x = bar.left + int(bar.width * frac)
+    pygame.draw.circle(screen, (255, 255, 255), (handle_x, bar.centery), 7)
+
+    state = "PAUSED" if not pb.playing else "PLAYING"
+    hud = (f"{state}  {pb.speed:g}x  frame {pb.index}/{pb.n - 1}  "
+           f"t={log.time_at(pb.index):.2f}  game {log.game_id}")
+    controls = ("SPACE play/pause   [ ] speed   , . step   HOME/END   "
+                "H/J/K overlays   F flow   L labels   R fit   ESC quit")
+    screen.blit(font.render(hud, True, (230, 230, 230)), (14, bar.top - 22))
+    screen.blit(font.render(controls, True, (160, 160, 160)), (14, bar.bottom + 8))
+
+
+# =========================================================================
+# MAIN LOOP
+# =========================================================================
+def run(log, poachers, patrols, boat_views, map_view, max_frames=None):
     screen = pygame.display.get_surface()
+    world_w, world_h = map_view.map_data.width_km, map_view.map_data.height_km
 
-    world_w = map_view.map_data.width_km
-    world_h = map_view.map_data.height_km
-    
     cam = Camera(world_w, world_h)
     cam.fit(*screen.get_size())
+    renderer = MapViewerRenderer(cam, fishing_color=FISHING_COLOR, patrol_color=PATROL_COLOR)
+    font = pygame.font.SysFont("consolas,menlo,monospace", 14)
 
-    mono = "consolas,menlo,dejavusansmono,monospace"
-    font = pygame.font.SysFont(mono, 14)
-    label_font = pygame.font.SysFont(mono, 12, bold=True)
-    port_labels = LabelCache(label_font, 90)
-    boat_labels = LabelCache(label_font, 130)
-
-    legend_fish_vessel = mf.simulation.PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0, home_port_id=0, start_heading=0.0)
-    legend_patrol_vessel = mf.simulation.PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
-
-    legend_fish = mf.rendering.BoatView(legend_fish_vessel, FISHING_COLOR, boat_size_px=12.0)
-    legend_patrol = mf.rendering.BoatView(legend_patrol_vessel, PATROL_COLOR, boat_size_px=12.0)
-
-    ui_messages = []
+    pb = Playback(log.n_steps)
     show_labels = True
     dragging = False
-    is_paused = False  
-    
+    scrubbing = False
     measuring = False
     measure_start_screen = (0, 0)
 
     clock = pygame.time.Clock()
-    
-    # ---------------------------------------------------------------------
-    # PLAYBACK TIMELINE CONTROL SETUP
-    # ---------------------------------------------------------------------
-    current_frame = 0
-    # Pull dictionary keys containing position data (Modify keys to exactly match your JAX tracking keys)
-    # Assumes shapes: (horizon, num_agents) or (horizon, num_agents, coords)
-    poacher_x = playback_data["poacher_x"]  
-    poacher_y = playback_data["poacher_y"]
-    poacher_heading = playback_data.get("poacher_heading", np.zeros_like(poacher_x))
-    
-    patrol_x = playback_data["patrol_x"]
-    patrol_y = playback_data["patrol_y"]
-    patrol_heading = playback_data.get("patrol_heading", np.zeros_like(patrol_x))
-    
-    horizon = poacher_x.shape[0]
-    ui_messages.append(f"Loaded playback run with {horizon} frames.")
-
+    frame = 0
     running = True
+
     while running:
-        dt = clock.tick(60) / 1000.0
+        dt = min(clock.tick(60) / 1000.0, 0.1)   # clamp so window drags don't skip the replay
         screen = pygame.display.get_surface()
         W, H = screen.get_size()
         cam.W, cam.H = W, H
+        bar = timeline_rect(W, H)
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
+
             elif ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     running = False
@@ -226,202 +247,108 @@ def run(env, poacher_views, patrol_views, map_view, playback_data):
                 elif ev.key == pygame.K_r:
                     cam.fit(W, H)
                 elif ev.key == pygame.K_SPACE:
-                    is_paused = not is_paused  
-                    ui_messages.append("PLAYBACK PAUSED" if is_paused else "PLAYBACK RESUMED")
-                # Manual frame scrubbing tools when simulation is paused
-                elif ev.key == pygame.K_LEFT and is_paused:
-                    current_frame = max(0, current_frame - 1)
-                elif ev.key == pygame.K_RIGHT and is_paused:
-                    current_frame = min(horizon - 1, current_frame + 1)
-                    
+                    pb.toggle()
+                elif ev.key == pygame.K_LEFTBRACKET:
+                    pb.change_speed(-1)
+                elif ev.key == pygame.K_RIGHTBRACKET:
+                    pb.change_speed(+1)
+                elif ev.key == pygame.K_COMMA:
+                    pb.playing = False
+                    pb.seek(pb.index - 1)
+                elif ev.key == pygame.K_PERIOD:
+                    pb.playing = False
+                    pb.seek(pb.index + 1)
+                elif ev.key == pygame.K_HOME:
+                    pb.seek(0)
+                elif ev.key == pygame.K_END:
+                    pb.seek(pb.n - 1)
+
             elif ev.type == pygame.MOUSEWHEEL:
                 cam.zoom_at(*pygame.mouse.get_pos(), 1.2 ** ev.y)
+
             elif ev.type == pygame.MOUSEBUTTONDOWN:
-                if ev.button in (1, 2):
+                if ev.button == 1 and bar.inflate(0, 16).collidepoint(ev.pos):
+                    scrubbing = True
+                    pb.playing = False
+                    pb.seek(((ev.pos[0] - bar.left) / bar.width) * (pb.n - 1))
+                elif ev.button in (1, 2):
                     dragging = True
-                elif ev.button == 3:  
+                elif ev.button == 3:
                     measuring = True
                     measure_start_screen = ev.pos
+
             elif ev.type == pygame.MOUSEBUTTONUP:
-                if ev.button in (1, 2):
+                if ev.button == 1:
+                    scrubbing = False
                     dragging = False
-                elif ev.button == 3:  
+                elif ev.button == 2:
+                    dragging = False
+                elif ev.button == 3:
                     measuring = False
+
             elif ev.type == pygame.MOUSEMOTION:
-                if dragging:
+                if scrubbing:
+                    frac = np.clip((ev.pos[0] - bar.left) / bar.width, 0.0, 1.0)
+                    pb.seek(frac * (pb.n - 1))
+                elif dragging:
                     cam.pan_pixels(*ev.rel)
 
-        # Smooth Map Panning System
+        # Keyboard pan/zoom
         keys = pygame.key.get_pressed()
         step_speed = 600 * dt
         dx = (keys[pygame.K_LEFT] or keys[pygame.K_a]) - (keys[pygame.K_RIGHT] or keys[pygame.K_d])
         dy = (keys[pygame.K_UP] or keys[pygame.K_w]) - (keys[pygame.K_DOWN] or keys[pygame.K_s])
-        
-        # Avoid panning with Arrow keys if we are using them to scrub frames in Paused Mode
-        if not is_paused:
-            if dx or dy:
-                cam.pan_pixels(dx * step_speed, dy * step_speed)
-        else:
-            # While paused, allow continuous map pan using the WASD configuration
-            letter_dx = keys[pygame.K_a] - keys[pygame.K_d]
-            letter_dy = keys[pygame.K_w] - keys[pygame.K_s]
-            if letter_dx or letter_dy:
-                cam.pan_pixels(letter_dx * step_speed, letter_dy * step_speed)
-
+        if dx or dy:
+            cam.pan_pixels(dx * step_speed, dy * step_speed)
         if keys[pygame.K_EQUALS] or keys[pygame.K_PLUS] or keys[pygame.K_KP_PLUS]:
             cam.zoom_at(W / 2, H / 2, 1 + 1.5 * dt)
         if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
             cam.zoom_at(W / 2, H / 2, 1 / (1 + 1.5 * dt))
 
-        # =========================================================================
-        # UPDATE PLAYBACK TIMELINE INDEX
-        # =========================================================================
-        if not is_paused:
-            current_frame += 1
-            if current_frame >= horizon:
-                current_frame = 0  # Loop timeline seamlessly back to step zero
+        # Advance playback and sync vessels to the current recorded frame
+        pb.update(dt)
+        idx = pb.index
+        apply_frame(log, poachers, patrols, idx)
+        ui_messages = log.messages_at(idx)
 
-        # Inject logged positional matrix states into underlying view entities
-        for idx, view in enumerate(poacher_views):
-            if idx < poacher_x.shape[1]:
-                view.vessel.x = poacher_x[current_frame, idx]
-                view.vessel.y = poacher_y[current_frame, idx]
-                view.vessel.heading = poacher_heading[current_frame, idx]
+        renderer.render(
+            screen=screen,
+            sim_time_hours=log.time_at(idx),
+            map_view=map_view,
+            boat_views=boat_views,
+            ui_messages=ui_messages,
+            show_labels=show_labels,
+            is_paused=not pb.playing,
+            measuring=measuring,
+            measure_start_screen=measure_start_screen,
+        )
 
-        for idx, view in enumerate(patrol_views):
-            if idx < patrol_x.shape[1]:
-                view.vessel.x = patrol_x[current_frame, idx]
-                view.vessel.y = patrol_y[current_frame, idx]
-                view.vessel.heading = patrol_heading[current_frame, idx]
-
-        # =========================================================================
-        # VISIBILITY CALCULATIONS & MAP RENDERING
-        # =========================================================================
-        view_width_km = W / cam.scale
-        ports_text_on = show_labels and (view_width_km <= PORT_LABEL_THRESHOLD_KM)
-        ships_text_on = show_labels and (view_width_km <= SHIP_LABEL_THRESHOLD_KM)
-        cargo_text_on = show_labels and (view_width_km <= CARGO_LABEL_THRESHOLD_KM)
-        velocity_text_on = show_labels and (view_width_km <= VELOCITY_LABEL_THRESHOLD_KM)
-
-        map_view.draw_background(screen, cam)
-        map_view.draw_flow(screen, cam)
-        map_view.draw_ports(screen, cam, ports_text_on, port_labels)
-                
-        for view in poacher_views + patrol_views:
-            view.draw(screen, cam, ships_text_on, cargo_text_on, velocity_text_on, boat_labels)
-
-        draw_legend(screen, font, legend_fish, legend_patrol)
-        draw_scale_bar(screen, cam, font)
-
-        # MEASURING TOOL RADIAL OVERLAY
-        if measuring:
-            current_mouse_pos = pygame.mouse.get_pos()
-            x0, y0 = cam.to_world(*measure_start_screen)
-            x1, y1 = cam.to_world(*current_mouse_pos)
-            dist_km = math.hypot(x1 - x0, y1 - y0)
-            bearing_rad = math.atan2(x1 - x0, y1 - y0)
-            bearing_deg = (math.degrees(bearing_rad)) % 360.0
-            
-            pygame.draw.line(screen, (0, 255, 255), measure_start_screen, current_mouse_pos, 2)
-            pygame.gfxdraw.filled_circle(screen, int(measure_start_screen[0]), int(measure_start_screen[1]), 4, (0, 255, 255))
-            pygame.gfxdraw.filled_circle(screen, int(current_mouse_pos[0]), int(current_mouse_pos[1]), 4, (0, 255, 255))
-            
-            measure_str = f" {dist_km:.1f} km | {bearing_deg:.1f}°"
-            m_surf = font.render(measure_str, True, (0, 255, 255))
-            m_bg = pygame.Surface((m_surf.get_width() + 6, m_surf.get_height() + 2), pygame.SRCALPHA)
-            m_bg.fill((10, 15, 20, 200))
-            m_bg.blit(m_surf, (3, 1))
-            screen.blit(m_bg, (current_mouse_pos[0] + 12, current_mouse_pos[1] - 12))
-
-        # Scrolling Messages Box Channel
-        msg_y = 50
-        if len(ui_messages) > 20: 
-            ui_messages = ui_messages[-20:]
-        for msg in ui_messages:
-            txt_surf = font.render(msg, True, (255, 255, 255))
-            bg_box = pygame.Surface((380, txt_surf.get_height() + 4), pygame.SRCALPHA)
-            bg_box.fill((10, 10, 15, 180))
-            bg_box.blit(txt_surf, (5, 2))
-            screen.blit(bg_box, (screen.get_width() - 400, msg_y))
-            msg_y += txt_surf.get_height() + 8
-
-        # =========================================================================
-        # HUD DASHBOARD FOOTER
-        # =========================================================================
-        mx, my = pygame.mouse.get_pos()
-        wx, wy = cam.to_world(mx, my)
-        
-        status_prefix = "PLAYBACK_PAUSED" if is_paused else "PLAYBACK_PLAYING"
-        info = f"[{status_prefix}] FRAME: {current_frame:04d}/{horizon:04d}"
-        info += f"  |  x {wx:7.1f} km  y {wy:7.1f} km"
-        lon, lat = map_view.map_data.km_to_lonlat(wx, wy)
-        info += f"  lon {lon:8.3f}  lat {lat:7.3f}"
-
-        if map_view.map_data.is_in_bounds(wx, wy):
-            cell = map_view.map_data.sample_point((wx, wy))
-            info += f"  elev {cell[Layers.HEIGHT]:7.0f} m  biomass {cell[Layers.BIOMASS]:.2f}"
-        else:
-            info += "  elev ------- m  biomass ----"
-            
-        hint_lines = [
-            "drag: pan | wheel: zoom | R: reset view | Space: pause | R-click: measure",
-            "H: biomass | J: shore dist | K: port dist | F: port flow | L: labels",
-            "PAUSED MODE -> Left/Right Arrow: Step frames manually | WASD: Pan map"
-        ]
-        
-        bar = pygame.Surface((W, 24), pygame.SRCALPHA)
-        bar.fill((0, 0, 0, 170))
-        screen.blit(bar, (0, H - 24))
-        screen.blit(font.render(info, True, (230, 230, 230)), (8, H - 21))
-        
-        h_surfs = [font.render(line, True, (160, 170, 180)) for line in hint_lines]
-        line_h = h_surfs[0].get_height()
-        box_w = max(s.get_width() for s in h_surfs) + 10
-        box_h = line_h * len(h_surfs) + 4 + 2 * (len(h_surfs) - 1)
-
-        hint_box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
-        hint_box.fill((10, 12, 18, 190))
-        
-        for i, s in enumerate(h_surfs):
-            hint_box.blit(s, (5, 2 + i * (line_h + 2)))  
-
-        screen.blit(hint_box, (8, H - 24 - box_h - 4))
-
+        draw_timeline(screen, bar, pb, font, log)
         pygame.display.flip()
+
+        frame += 1
+        if max_frames is not None and frame >= max_frames:
+            break
 
 
 def main():
     pygame.init()
     pygame.display.set_mode((900, 900), pygame.RESIZABLE)
-    pygame.display.set_caption("MARL Fishing Playback Viewer")
+    pygame.display.set_caption("MARL Fishing Replay")
 
-    # Load rollout file via your BatchRollout definition
-    rollout = BatchRollout.load(ROLLOUT_FILE)
-    best_idx, best_score, single_run_data = rollout.get_representative_run()
-    print(f"Playing back Environment Index {best_idx} (Cumulative Score: {best_score:.2f})")
-
-    print("Loading data via package MapGenerator...")
+    print("Loading map...")
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
     map_data = generator.generate_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
-    
     map_view = mf.rendering.MapView(map_data)
-    env = mf.simulation.Environment(map_data)
 
-    # Automatically size agent layout counts based on trajectory shape sizes
-    num_poachers = single_run_data["poacher_x"].shape[1]
-    num_patrols = single_run_data["patrol_x"].shape[1]
+    print("Loading game log...")
+    log = ReplayLog(STORE_PATH, GAME_METRIC, GAME_HOW)
+    print(f"Game {log.game_id}: {log.n_steps} frames, "
+          f"{log.n_poachers} poachers, {log.n_patrols} patrols, {len(log.events)} events")
 
-    poacher_views = []
-    for i in range(num_poachers):
-        p = mf.simulation.PoacherVessel(name=f"POACHER_{i}", start_x=0, start_y=0, home_port_id=0, start_heading=0)
-        poacher_views.append(mf.rendering.BoatView(p, FISHING_COLOR, boat_size_px=12.0))
+    poachers, patrols, boat_views = build_vessels(log)
+    run(log, poachers, patrols, boat_views, map_view)
 
-    patrol_views = []
-    for i in range(num_patrols):
-        p = mf.simulation.PatrolVessel(name=f"PATROL_{i}", start_x=0, start_y=0, start_heading=0)
-        patrol_views.append(mf.rendering.BoatView(p, PATROL_COLOR, boat_size_px=12.0))
-
-    run(env, poacher_views, patrol_views, map_view, single_run_data)
     pygame.quit()
 
 
