@@ -1,13 +1,14 @@
 from pathlib import Path
 import jax
 import jax.numpy as jnp
-import multiagent_fishing as mf  # Your existing package
-from multiagent_fishing.jax_sim.batch_rollout import BatchRollout
+import multiagent_fishing as mf
+from multiagent_fishing.jax_sim.game_store import GameStore
 from multiagent_fishing.jax_sim.maps import GridMap
 from multiagent_fishing.jax_sim.env import FishingEnv, EnvConfig
 from multiagent_fishing.jax_sim.policy import make_mlp_actor_critic, build_policies
 from multiagent_fishing.jax_sim.rollout import make_rollout_fn
 import numpy as np
+
 
 # =========================================================================
 # CONFIG
@@ -78,31 +79,10 @@ critic_mode = "local"
 nets, params = build_policies(key, env.dims(critic_mode), make_mlp_actor_critic((256, 256)))
 rollout = make_rollout_fn(env, nets, num_envs=4096, horizon=128, critic_mode=critic_mode)
 
-# --- TRACKED EXECUTION PIPELINE ---
-
-# Progress Bar 1: Running the Parallel Simulation
-with tqdm(total=1, desc="Running JAX parallel rollouts", bar_format="{l_bar}{bar}| [Running on Device]") as pbar:
-    traj = rollout(params, key)
-    traj["rewards"]["poacher"].block_until_ready() # Force JAX to finish computation on GPU/TPU
-    pbar.update(1)
-
-# Progress Bar 2: Device-to-Host Data Transfer
-with tqdm(total=1, desc="Retrieving data from device", bar_format="{l_bar}{bar}| [Copying to Host RAM]") as pbar:
-    cpu_traj = jax.device_get(traj)
-    pbar.update(1)
-
-print("Finished! Trajectory shape:", cpu_traj["rewards"]["poacher"].shape)
-
-# Progress Bar 3: Flattening and Structuring matrix layers
-flat_data = {}
-for key, value in tqdm(cpu_traj.items(), desc="Structuring matrix layers", unit="layer"):
-    if isinstance(value, dict):
-        for sub_key, sub_arr in value.items():
-            flat_data[f"{key}_{sub_key}"] = sub_arr
-    else:
-        flat_data[key] = value
-
-# 8. Wrap it in our manager and save it to disk safely
-rollout_batch = BatchRollout(flat_data)
-rollout_batch.save(FINAL_SAVE_PATH)
-print(f"File successfully written to relative location: {FINAL_SAVE_PATH}")
+traj = rollout(params, key)
+store = GameStore.from_rollout(
+    traj, grid, env.cfg,
+    meta={"seed": 0, "critic_mode": critic_mode, "resolution_km": RESOLUTION},
+)
+store.save(FINAL_SAVE_PATH)
+print(f"Saved {len(store.games)} games to {FINAL_SAVE_PATH}")
