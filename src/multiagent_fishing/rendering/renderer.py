@@ -7,6 +7,9 @@ import pygame.gfxdraw
 
 # Relative imports within the multiagent_fishing package structure
 from ..world import Layers 
+# Adjust these relative paths if your actual agent/vessel file structure differs
+from ..simulation.vessels import PoacherVessel
+from ..simulation.vessels import PatrolVessel
 
 # Visual Thresholds and Styling
 SHIP_LABEL_THRESHOLD_KM = 4000.0
@@ -93,27 +96,22 @@ class MapViewerRenderer:
         self.legend_fish = None
         self.legend_patrol = None
 
-    def _init_legend_views(self, boat_view_cls, poacher_cls, patrol_cls):
-        """Pre-construct dummy vessel assets to illustrate the UI Legend."""
-        f_vessel = poacher_cls(name="DummyFish", start_x=0.0, start_y=0.0, home_port_id=0, start_heading=0.0)
-        p_vessel = patrol_cls(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
+    def _init_legend_views(self, boat_view_cls):
+        """Pre-construct dummy vessel assets to illustrate the UI Legend using imported classes."""
+        f_vessel = PoacherVessel(name="DummyFish", start_x=0.0, start_y=0.0, home_port_id=0, start_heading=0.0)
+        p_vessel = PatrolVessel(name="DummyPatrol", start_x=0.0, start_y=0.0, start_heading=0.0)
         self.legend_fish = boat_view_cls(f_vessel, self.fishing_color, boat_size_px=12.0)
         self.legend_patrol = boat_view_cls(p_vessel, self.patrol_color, boat_size_px=12.0)
         self._legend_initialized = True
 
-    def render(self, screen, env, map_view, boat_views, ui_messages, show_labels, is_paused, measuring, measure_start_screen):
+    def render(self, screen, map_view, boat_views, sim_time_hours, ui_messages, show_labels, is_paused, measuring, measure_start_screen):
         W, H = screen.get_size()
         view_width_km = W / self.cam.scale
         
-        # 1. Initialize Legend items lazily using the existing runtime classes
+        # 1. Initialize Legend items statically if view class is available
         if not self._legend_initialized and boat_views:
-            # Safely grab types directly from the passed-in views and environment to avoid circular imports
             boat_view_cls = boat_views[0].__class__
-            poacher_cls = env.poachers[list(env.poachers.keys())[0]].__class__ if env.poachers else None
-            patrol_cls = env.patrol_boats[list(env.patrol_boats.keys())[0]].__class__ if env.patrol_boats else None
-            
-            if poacher_cls and patrol_cls:
-                self._init_legend_views(boat_view_cls, poacher_cls, patrol_cls)
+            self._init_legend_views(boat_view_cls)
 
         # 2. Level of Detail Threshold Visibility Triggers
         ports_text_on = show_labels and (view_width_km <= PORT_LABEL_THRESHOLD_KM)
@@ -140,7 +138,7 @@ class MapViewerRenderer:
             self._draw_measurement_ruler(screen, measure_start_screen)
             
         self._draw_ui_logs(screen, ui_messages)
-        self._draw_bottom_dashboard(screen, env, map_view, is_paused)
+        self._draw_bottom_dashboard(screen=screen, sim_time_hours=sim_time_hours, map_view=map_view, is_paused=is_paused)
 
     def _draw_scale_bar(self, screen):
         km = 140 / self.cam.scale
@@ -211,12 +209,12 @@ class MapViewerRenderer:
             screen.blit(bg_box, (screen.get_width() - 400, msg_y))
             msg_y += txt_surf.get_height() + 8
 
-    def _draw_bottom_dashboard(self, screen, env, map_view, is_paused):
+    def _draw_bottom_dashboard(self, screen, sim_time_hours, map_view, is_paused):
         W, H = screen.get_size()
         mx, my = pygame.mouse.get_pos()
         wx, wy = self.cam.to_world(mx, my)
         
-        total_hours = env.sim_time_hours
+        total_hours = sim_time_hours
         sim_days = int(total_hours // 24)
         sim_hours = int(total_hours % 24)
         sim_minutes = int((total_hours * 60) % 60)

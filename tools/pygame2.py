@@ -9,7 +9,6 @@ import numpy as np
 import pygame
 import multiagent_fishing as mf
 
-# 1. UPDATED: Import the abstracted renderer and camera straight from your package namespace!
 from multiagent_fishing.rendering import MapViewerRenderer, Camera
 
 # =========================================================================
@@ -99,6 +98,8 @@ def run(env, boat_views, map_view, max_frames=None):
     measuring = False
     measure_start_screen = (0, 0)
 
+    sim_time_hours=0
+
     clock = pygame.time.Clock()
     frame = 0
     running = True
@@ -166,8 +167,8 @@ def run(env, boat_views, map_view, max_frames=None):
         # UPDATE SIMULATION PHYSICS
         # =========================================================================
         if not is_paused:
-            actions = env.get_actions(dt)
-            step_events = env.step(actions, dt=dt)
+            actions = env.get_actions(dt*0.5)
+            step_events = env.step(actions, dt=dt*0.5)
             
             for app in step_events.get("apprehensions", []):
                 p_id, pat_id = app["poacher_id"], app["by_patrol_id"]
@@ -196,7 +197,7 @@ def run(env, boat_views, map_view, max_frames=None):
         # =========================================================================
         renderer.render(
             screen=screen,
-            env=env,
+            sim_time_hours=env.sim_time_hours,
             map_view=map_view,
             boat_views=boat_views,
             ui_messages=ui_messages,
