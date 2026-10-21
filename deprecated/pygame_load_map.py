@@ -337,7 +337,6 @@ def run(env, boat_views, map_view, max_frames=None):
             if len(ui_messages) > 20:
                 ui_messages = ui_messages[-20:]
 
-
         # =========================================================================
         # VISIBILITY CALCULATIONS
         # =========================================================================
@@ -460,12 +459,12 @@ def run(env, boat_views, map_view, max_frames=None):
             break
 
 
-def main():
-    pygame.init()
 
+if __name__ == "__main__":
+
+    pygame.init()
     pygame.display.set_mode((900, 900), pygame.RESIZABLE)
     pygame.display.set_caption("MARL Fishing Environment")
-
 
     print("Loading data via package MapGenerator...")
     generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
@@ -474,33 +473,23 @@ def main():
     map_view = mf.rendering.MapView(map_data)
     env = mf.simulation.Environment(map_data)
 
-    sim_poachers = [
-        mf.simulation.PoacherVessel(name="ORION", start_x=45.0, start_y=120.0, home_port_id=0, start_heading=np.pi / 4),
-        mf.simulation.PoacherVessel(name="MARINER", start_x=90.0, start_y=340.0, home_port_id=1, start_heading=np.pi),
-        mf.simulation.PoacherVessel(name="SEAWOLF", start_x=150.0, start_y=510.0, home_port_id=2, start_heading=1.5 * np.pi)
-    ]
-    sim_patrols = [
-        mf.simulation.PatrolVessel(name="PATROL_A", start_x=60.0, start_y=150.0, start_heading=0.0),
-        mf.simulation.PatrolVessel(name="PATROL_B", start_x=110.0, start_y=400.0, start_heading=0.75 * np.pi)
-    ]
-
-    for p in sim_poachers:
-        env.add_vessel(p)
-    for p in sim_patrols:
-        env.add_vessel(p)
-
-    env.set_poacher_brain(mf.brains.BasicPoacherBrain())
-    env.set_patrol_brain(mf.brains.DummyPatrolBrain())
-
+    # Initialize empty collections for runtime structures
     boat_views = []
-    for p in sim_poachers:
-        boat_views.append(mf.rendering.BoatView(p, FISHING_COLOR, boat_size_px=12.0))
-    for p in sim_patrols:
-        boat_views.append(mf.rendering.BoatView(p, PATROL_COLOR, boat_size_px=12.0))
 
+    #Spawn initial fleet randomly at ports
+    num_poachers = 4
+    num_patrols = 3
+
+    for _ in range(num_poachers):
+        spawn_random_vessel(env, boat_views, is_poacher=True)
+
+    for _ in range(num_patrols):
+        spawn_random_vessel(env, boat_views, is_poacher=False)
+
+    # Attach the AI brains
+    env.set_poacher_brain(mf.brains.BasicPoacherBrain())
+    env.set_patrol_brain(mf.brains.BasicPatrolBrain())
+
+    # Hand off collections directly to the runner loop
     run(env, boat_views, map_view)
     pygame.quit()
-
-
-if __name__ == "__main__":
-    main()
