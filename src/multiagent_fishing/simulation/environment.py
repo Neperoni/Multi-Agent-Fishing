@@ -164,19 +164,37 @@ class Environment:
                     poacher.current_speed = 0.0
                     logs["apprehensions"].append({"poacher_id": poacher_id, "by_patrol_id": patrol_id})
 
+
     def get_observation(self, vessel_id: int, dt: float, params: dict = None) -> Observation:
         """Builds the decision-time Observation for a single vessel."""
         vessel = self.poachers.get(vessel_id) or self.patrol_boats.get(vessel_id)
         if vessel is None:
             raise KeyError(f"No vessel registered with id {vessel_id}")
+            
+        # 1. Pull the radar range setting from params
+        actual_params = params or {}
+        radar_radius = actual_params.get("radar_radius_km", 50.0)
+        
+        # 2. Compute nearby visible ships using the helper logic
+        visible = []
+        for other in self.all_vessels:
+            if not other.is_active or other.id == vessel_id:
+                continue
+            distance = math.hypot(other.x - vessel.x, other.y - vessel.y)
+            if distance <= radar_radius:
+                visible.append(other)
+
+        # 3. Deliver packaged, decoupled observation data
         return Observation(
             vessel_id=vessel_id,
             vessel_state=vessel,
             timestep=dt,
             role=vessel.role,
+            visible_ships=visible,
             env=self,
-            params=params or {},
+            params=actual_params,
         )
+
 
     def get_actions(self, dt: float) -> dict:
         """Asks each role's brain for an action for every active vessel."""
@@ -191,3 +209,25 @@ class Environment:
             if vessel.is_active:
                 actions[vid] = self.patrol_brain.get_action(self.get_observation(vid, dt))
         return actions
+    
+    def get_vessels_in_radius(self, center_x: float, center_y: float, radius_km: float, exclude_id: int = None) -> List[SimulationVessel]:
+        """
+        Finds all active vessels within a given kilometer radius of a coordinate.
+        
+        :param center_x: The X coordinate of the scanning agent.
+        :param center_y: The Y coordinate of the scanning agent.
+        :param radius_km: The maximum detection range.
+        :param exclude_id: Optional ID of the scanning vessel to prevent self-detection.
+        :return: A list of SimulationVessel objects within range.
+        """
+        detected_vessels = []
+        
+        for vessel in self.all_vessels:
+            if not vessel.is_active or vessel.id == exclude_id:
+                continue
+                
+            distance = math.hypot(vessel.x - center_x, vessel.y - center_y)
+            if distance <= radius_km:
+                detected_vessels.append(vessel)
+                
+        return detected_vessels
