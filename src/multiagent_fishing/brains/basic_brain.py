@@ -1,10 +1,11 @@
 # multiagent_fishing/brains/basic_brains.py
 import math
+import random
 
 from multiagent_fishing.brains.abstract_brain import AbstractBrain
 from multiagent_fishing.simulation.observation import Observation
+from multiagent_fishing.simulation.vessels import Role
 from multiagent_fishing.world import Layers
-
 
 # ---------------------------------------------------------------------------
 # Navigation helpers
@@ -152,15 +153,56 @@ class BasicPoacherBrain(AbstractBrain):
 
 
 class BasicPatrolBrain(AbstractBrain):
-    """Sails straight, turning the smallest angle needed to avoid terrain or the map edge."""
+    """
+    Patrol boats travel in a straight line at full speed.
+    - If a poacher is detected in obs.visible_ships, they aggressively intercept it.
+    - If land or out-of-bounds is detected ahead, they execute a physical 'bounce-off'
+      reflection to choose a new valid heading and keep moving.
+    """
 
     def get_action(self, obs: Observation):
         vessel = obs.vessel_state
-        lookahead = obs.params.get("lookahead_km", 20.0)
+        map_data = obs.env.map_data
+        p = obs.params
 
-        heading = safe_heading(
-            obs.env.map_data, vessel.x, vessel.y, vessel.current_heading, lookahead
-        )
-        if heading is None:
-            return (vessel.current_heading, 0.0)  # boxed in
-        return (heading, 0.5)
+        lookahead = p.get("lookahead_km", 20.0)
+        
+        # 1. --- RADAR INTERCEPTION LOGIC ---
+        # Filter matching the specific Role Enum object structure
+        visible_poachers = [
+            s for s in obs.visible_ships 
+            if s.role == Role.POACHER and getattr(s, "is_active", True) and not getattr(s, "is_caught", False)
+        ]
+
+        if visible_poachers:
+            # Target the closest poacher from our local radar array
+            closest_poacher = min(
+                visible_poachers, 
+                key=lambda s: math.hypot(s.x - vessel.x, s.y - vessel.y)
+            )
+            intercept_heading = bearing_to(vessel.x, vessel.y, closest_poacher.x, closest_poacher.y)
+            
+            # Reduce lookahead distance during active hot pursuit to allow shallow-water chases
+            chase_lookahead = min(5.0, lookahead / 4.0)
+            safe_intercept = safe_heading(map_data, vessel.x, vessel.y, intercept_heading, chase_lookahead)
+            
+            if safe_intercept is not None:
+                return (safe_intercept, 1.0) # Full speed intercept split
+                
+        # 2. --- COLLISION & BOUNDARY REFLECTION (BOUNCE-OFF) ---
+        if not path_is_safe(map_data, vessel.x, vessel.y, vessel.current_heading, lookahead):
+            # Calculate a mirrored bounce-back reflection vector
+            bounce_angle = (vessel.current_heading + math.pi) % (2 * math.pi)
+            new_heading = safe_heading(map_data, vessel.x, vessel.y, bounce_angle, lookahead)
+            
+            if new_heading is not None:
+                # Convert 10 degrees to radians and apply a random variance between -10° and +10°
+                random_angle_variation = random.uniform(math.radians(-40), math.radians(40))
+                final_heading = (new_heading + random_angle_variation) % (2 * math.pi)
+                
+                return (final_heading, 1.0)
+            else:
+                return (vessel.current_heading + 0.03, 0.1)  # Boxed-in state safeguard
+
+        # 3. --- DEFAULT STATE: CRUISE STRAIGHT ---
+        return (vessel.current_heading, 1.0)
