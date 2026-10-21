@@ -229,8 +229,8 @@ def main():
     boat_views = []
 
     #Spawn initial fleet randomly at ports
-    num_poachers = 4
-    num_patrols = 3
+    num_poachers = 12
+    num_patrols = 5
 
     for _ in range(num_poachers):
         spawn_random_vessel(env, boat_views, is_poacher=True)
