@@ -168,7 +168,7 @@ def run(env, boat_views, map_view, max_frames=None):
         # =========================================================================
         if not is_paused:
             actions = env.get_actions(dt*0.5)
-            step_events = env.step(actions, dt=dt*0.5)
+            step_events = env.step(actions, dt=dt*0.75)
             
             for app in step_events.get("apprehensions", []):
                 p_id, pat_id = app["poacher_id"], app["by_patrol_id"]
