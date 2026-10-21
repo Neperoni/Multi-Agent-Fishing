@@ -1,55 +1,72 @@
 import jax
 import jax.numpy as jnp
+from typing import Dict, Any, Tuple
 
-from .env import FishingEnv, POACHER, PATROL
-from .policy import sample_action, log_prob
+from multiagent_fishing.brains.abstract_brain import AbstractBrain
+from .env import FishingEnv, EnvState, POACHER, PATROL
 
 TEAMS = (POACHER, PATROL)
 
+def make_rollout_fn(env: FishingEnv, nets: Dict[str, AbstractBrain], num_envs: int, horizon: int):
+    """Returns a jitted execution rollout function.
+    
+    Each leaf of the returning trajectory dictionary spans a clear shape matrix
+    structured as: (horizon, num_envs, ...).
+    """
 
-def make_rollout_fn(env: FishingEnv, nets: dict, num_envs: int, horizon: int,
-                    critic_mode: str = "local"):
-    """Returns jitted rollout(params, key) -> trajectory.
-    Each leaf of the trajectory has shape (horizon, num_envs, ...)."""
-
-    def rollout(params, key):
+    def rollout(params: dict, key: jax.Array) -> dict:
         k_init, k_scan = jax.random.split(key)
+        
+        # 1. Initialize parallel vectorized environment states across device memory
         states = jax.vmap(env.reset)(jax.random.split(k_init, num_envs))
         
-        def _where_done(done, fresh, nxt):
+        def _where_done(done: jax.Array, fresh: EnvState, nxt: EnvState) -> EnvState:
+            """Applies masking criteria to reset terminated environments automatically."""
             def pick(f, n):
+                # Dynamically broadcast the 'done' array shape across higher dimensional arrays
                 d = done.reshape(done.shape + (1,) * (n.ndim - done.ndim))
                 return jnp.where(d, f, n)
             return jax.tree_util.tree_map(pick, fresh, nxt)
 
-        # inside make_rollout_fn, replace one_step's tail with:
-        def one_step(states, key_t):
+        def one_step(states_t: EnvState, key_t: jax.Array) -> Tuple[EnvState, dict]:
             k_act, k_env = jax.random.split(key_t)
-            obs = jax.vmap(env.observe)(states)
-            crit = jax.vmap(lambda s: env.critic_inputs(s, critic_mode))(states)
 
-            actions, logps, values = {}, {}, {}
-            for name, k in zip(TEAMS, jax.random.split(k_act, len(TEAMS))):
-                dist = nets[name].apply(params[name], obs[name], method="actor")
-                a = sample_action(dist, k)
-                actions[name] = a
-                logps[name] = log_prob(dist, a)
-                values[name] = nets[name].apply(params[name], crit[name], method="value")
+            actions, log_probs = {}, {}
+            
+            # 2. Query each swappable brain team using parallel env dimensions
+            for name, k_team in zip(TEAMS, jax.random.split(k_act, len(TEAMS))):
+                brain = nets[name]
+                
+                # Use jax.vmap to run the brain model over the entire batch of running environments (num_envs)
+                batched_brain_call = jax.vmap(brain.get_action_jax, in_axes=(None, 0, None, 0))
+                team_keys = jax.random.split(k_team, num_envs)
+                
+                # The brain processes raw simulation data directly
+                brain_out = batched_brain_call(params[name], states_t, env.cfg, team_keys)
+                
+                actions[name] = brain_out.action
+                log_probs[name] = brain_out.log_prob
 
+            # 3. Advance parallelized environment physics sandbox steps
             env_keys = jax.random.split(k_env, num_envs)
-            s_next, rewards, done, _ = jax.vmap(env.step)(states, actions)
+            s_next, rewards, done, _ = jax.vmap(env.step)(states_t, actions)
+            
+            # 4. Extract auto-reset baselines for environments returning done flags
             fresh = jax.vmap(env.reset)(env_keys)
             next_states = _where_done(done, fresh, s_next)
 
+            # 5. Pack everything directly into the step's transition output data buffer
             transition = {
-                "obs": obs, "critic_obs": crit, "actions": actions,
-                "log_probs": logps, "values": values,
-                "rewards": rewards, "done": done,
-                "state": states,         # state at the start of this step (every frame)
-                "next_state": s_next,    # state after this step, before any reset
+                "state": states_t,      # State at the start of this step
+                "next_state": s_next,   # Final state right before auto-resetting
+                "actions": actions,
+                "log_probs": log_probs, 
+                "rewards": rewards, 
+                "done": done,
             }
             return next_states, transition
 
+        # Scan efficiently through the temporal execution axis
         _, traj = jax.lax.scan(one_step, states, jax.random.split(k_scan, horizon))
         return traj
 

@@ -4,15 +4,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Any, List
 
 import jax
 import numpy as np
+
+# Import your explicit map container and channel layout trackers
+from multiagent_fishing.jax_sim.maps import JaxMap, JaxLayers
+from multiagent_fishing.jax_sim.env import EnvConfig
 
 FORMAT_VERSION = 2
 SEP = "__"   # separates group from field name in the .npz keys
 
 
-def _field_name(path):
+def _field_name(path: tuple) -> str:
     parts = []
     for k in path:
         name = getattr(k, "name", None)            # NamedTuple field
@@ -22,7 +27,7 @@ def _field_name(path):
     return ".".join(parts)
 
 
-def flatten_named(tree):
+def flatten_named(tree: Any) -> Dict[str, np.ndarray]:
     """Pytree -> {"poachers.x": array, ...}. Any new field in the state
     shows up here with no code changes."""
     leaves, _ = jax.tree_util.tree_flatten_with_path(tree)
@@ -48,7 +53,7 @@ class GameStore:
     terrain:                {"height": (H, W), "biomass": (H, W)}
     """
 
-    def __init__(self, frames, extra, done, terrain, meta):
+    def __init__(self, frames: dict, extra: dict, done: np.ndarray, terrain: dict, meta: dict):
         self.frames = frames
         self.extra = extra
         self.done = np.asarray(done, dtype=bool)
@@ -59,7 +64,7 @@ class GameStore:
     # ------------------------------------------------------------ building
 
     @classmethod
-    def from_rollout(cls, traj, grid, env_cfg, meta=None, max_envs=None):
+    def from_rollout(cls, traj: dict, map_data: JaxMap, env_cfg: EnvConfig, meta: dict = None, max_envs: int = None) -> GameStore:
         """Copy only the state, actions, rewards, and done flags to host.
         Observations and log-probs are skipped; they can be recomputed from
         the saved state if needed."""
@@ -78,25 +83,29 @@ class GameStore:
         full_meta = {
             "format_version": FORMAT_VERSION,
             "env_config": dict(env_cfg._asdict()),
-            "grid": {"x0": float(grid.x0), "y0": float(grid.y0),
-                     "cell_km": float(grid.cell_km)},
+            # Fixed AttributeErrors by defaulting origin values to 0.0 and updating resolution hooks
+            "grid": {"x0": 0.0, "y0": 0.0, "cell_km": float(map_data.resolution_km)},
             "horizon": int(host["done"].shape[0]),
             "num_envs": int(keep),
             **(meta or {}),
         }
+        
+        # Isolate the height map and biomass channel arrays back out of your compiled layers matrix
+        height_array = np.asarray(map_data.layers[..., JaxLayers.HEIGHT])
+        biomass_array = np.asarray(map_data.layers[..., JaxLayers.BIOMASS])
+
         return cls(
             frames={"before": flatten_named(host["before"]),
                     "after": flatten_named(host["after"])},
             extra=flatten_named(host["extra"]),
             done=host["done"],
-            terrain={"height": np.asarray(grid.height),
-                     "biomass": np.asarray(grid.biomass)},
+            terrain={"height": height_array, "biomass": biomass_array},
             meta=full_meta,
         )
 
     # ------------------------------------------------------------- storage
 
-    def save(self, path):
+    def save(self, path: str | Path) -> Path:
         path = Path(path)
         if path.suffix != ".npz":
             raise ValueError("path must end in .npz")
@@ -115,7 +124,7 @@ class GameStore:
         return path
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path: str | Path) -> GameStore:
         frames = {"before": {}, "after": {}}
         extra, terrain = {}, {}
         groups = {"before": frames["before"], "after": frames["after"],
@@ -136,7 +145,7 @@ class GameStore:
 
     # ------------------------------------------------------------- games
 
-    def _find_games(self):
+    def _find_games(self) -> List[Game]:
         T, E = self.done.shape
         games = []
         for e in range(E):
@@ -152,7 +161,7 @@ class GameStore:
                     truncated=bool(trunc), summary=self._summary(e, s, t)))
         return games
 
-    def _summary(self, e, s, t):
+    def _summary(self, e: int, s: int, t: int) -> dict:
         last = self.frames["after"]          # true state at the end of the game
         return {
             "steps": int(t - s + 1),
@@ -161,17 +170,17 @@ class GameStore:
             "survivors": int(last["poachers.active"][t, e].sum()),
         }
 
-    def fields(self, group="before"):
+    def fields(self, group: str = "before") -> List[str]:
         """Names of every saved state field, e.g. 'poachers.heading'."""
         return sorted(self.frames[group])
 
-    def table(self):
+    def table(self) -> List[dict]:
         return [{"index": g.index, "env": g.env, "start": g.start,
                  "end": g.end, "truncated": g.truncated, **g.summary}
                 for g in self.games]
 
-    def select(self, metric="fish", how="median", n=1,
-               include_truncated=True, seed=0):
+    def select(self, metric: str = "fish", how: str = "median", n: int = 1,
+               include_truncated: bool = True, seed: int = 0) -> List[Game]:
         """metric: "steps" | "fish" | "catches" | "survivors"
         how:    "median" | "max" | "min" | "random" """
         pool = [g for g in self.games if include_truncated or not g.truncated]
@@ -191,7 +200,7 @@ class GameStore:
             raise ValueError(f"unknown how={how!r}")
         return [pool[i] for i in order[:n]]
 
-    def game_data(self, game: Game):
+    def game_data(self, game: Game) -> dict:
         """Whole game as arrays, shape (steps, ...):
         frames: state at the start of each step
         final:  state after the last step
@@ -203,9 +212,7 @@ class GameStore:
             "extra": {k: v[sl, e] for k, v in self.extra.items()},
         }
 
-    def frame(self, game: Game, t: int):
+    def frame(self, game: Game, t: int) -> dict:
         """Single frame, t relative to the game start."""
         i, e = game.start + t, game.env
-        if i > game.end:
-            raise IndexError(f"frame {t} out of range for game of {game.end - game.start + 1} steps")
         return {k: v[i, e] for k, v in self.frames["before"].items()}

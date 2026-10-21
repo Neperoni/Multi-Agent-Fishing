@@ -2,11 +2,15 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import multiagent_fishing as mf
+
 from multiagent_fishing.jax_sim.game_store import GameStore
-from multiagent_fishing.jax_sim.maps import GridMap
-from multiagent_fishing.jax_sim.env import FishingEnv, EnvConfig
-from multiagent_fishing.jax_sim.policy import make_mlp_actor_critic, build_policies
+# Cleaned up map imports to remove the offline modification function
+from multiagent_fishing.jax_sim.maps import JaxMap
+from multiagent_fishing.jax_sim.env import FishingEnv, EnvConfig, POACHER, PATROL
 from multiagent_fishing.jax_sim.rollout import make_rollout_fn
+
+# Imported your dummy brain classes directly
+from multiagent_fishing.brains.dummy_brain import DummyPoacherBrain, DummyPatrolBrain
 import numpy as np
 
 
@@ -33,19 +37,13 @@ PATROL_COLOR = (0, 255, 102)
 PORT_COLOR = (255, 0, 127)
 
 # --- Configurable Relative Path Setup ---
-# Resolves path relative to THIS file's current directory (tools/)
 CURRENT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = CURRENT_DIR / "../datasets/jax_runs"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)  # Automatically creates the jax_runs folder if it doesn't exist
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)  
 
 OUTPUT_FILENAME = "generation_001.npz"
 FINAL_SAVE_PATH = str(OUTPUT_DIR / OUTPUT_FILENAME)
 
-
-# =========================================================================
-# EXECUTION
-# =========================================================================
-from tqdm import tqdm
 
 # =========================================================================
 # EXECUTION WITH ASYNC PROGRESS TRACKING
@@ -56,33 +54,39 @@ print("Loading data via package MapGenerator...")
 generator = mf.MapGenerator(FILE_PATH, ports_path=PORTS_PATH)
 map_data = generator.generate_map(RESOLUTION, COASTAL_SUBSET, biomass_seed=BIOMASS_SEED)
 
-# 2. Extract arrays from map_data.layers
-jax_height = jnp.array(map_data.layers[..., 0])   
-jax_biomass = jnp.array(map_data.layers[..., 1])  
+# 2. Ship the pre-computed host datasets onto device arrays inside JaxMap directly
+numpy_map = JaxMap.from_numpy_map(map_data)
 
-# 3. Instantiate the JAX GridMap
-grid = GridMap(
-    height=jax_height, 
-    biomass=jax_biomass, 
-    x0=0.0, 
-    y0=0.0, 
-    cell_km=map_data.resolution_km  
-)
+# 3. Initialize the pure physical simulation environment passing your static map 
+env_cfg = EnvConfig(num_poachers=8, num_patrols=3, max_steps=1000)
+env = FishingEnv(cfg=env_cfg, map_data=numpy_map)
 
-# 4. Initialize the JAX vectorized simulation
-env = FishingEnv(EnvConfig(num_poachers=8, num_patrols=3), grid)
+# 4. Instantiate your swappable Dummy Brain classes
+nets = {
+    POACHER: DummyPoacherBrain(),
+    PATROL: DummyPatrolBrain()
+}
+
+# Dummy parameters dictionary map used to satisfy the functional loop setup
+params = {
+    POACHER: None,
+    PATROL: None
+}
 
 key = jax.random.PRNGKey(0)
-critic_mode = "local" 
 
-# 5. Build policies and evaluate parallel environments
-nets, params = build_policies(key, env.dims(critic_mode), make_mlp_actor_critic((256, 256)))
-rollout = make_rollout_fn(env, nets, num_envs=4096, horizon=128, critic_mode=critic_mode)
+# 5. Build your decoupled, parallelized rollout simulation function
+print("Compiling production execution rollout engine...")
+rollout = make_rollout_fn(env, nets, num_envs=4096, horizon=128)
 
+# 6. Execute the simulation loop via XLA on your hardware device
+print("Running parallelized environment instances...")
 traj = rollout(params, key)
+
+# 7. Extract snapshots and package data tracking records into GameStore
 store = GameStore.from_rollout(
-    traj, grid, env.cfg,
-    meta={"seed": 0, "critic_mode": critic_mode, "resolution_km": RESOLUTION},
+    traj, numpy_map, env.cfg,
+    meta={"seed": 0, "resolution_km": RESOLUTION},
 )
 store.save(FINAL_SAVE_PATH)
 print(f"Saved {len(store.games)} games to {FINAL_SAVE_PATH}")
